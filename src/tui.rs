@@ -84,6 +84,7 @@ struct App {
     tx: UnboundedSender<AsyncEvent>,
     textarea: TextArea<'static>,
     messages: Vec<Message>,
+    view_offset: (u16, u16),
     history: Vec<String>,
     awaiting_response: bool,
     review: Option<ReviewState>,
@@ -99,6 +100,7 @@ impl App {
             tx,
             textarea: build_textarea(),
             messages: Vec::new(),
+            view_offset: (0, 0),
             history: Vec::new(),
             awaiting_response: false,
             review: None,
@@ -229,7 +231,7 @@ impl App {
             frame.render_widget(review_block, layout[0]);
         }
 
-        frame.render_widget(self.textarea.widget(), layout[1]);
+        self.draw_prompt(frame, layout[1]);
     }
 
     fn render_history(&self) -> Vec<Line<'static>> {
@@ -272,10 +274,75 @@ impl App {
             .wrap(Wrap { trim: false })
     }
 
+    fn draw_prompt(&mut self, frame: &mut Frame, area: Rect) {
+        let prompt_block = Block::default()
+            .borders(Borders::ALL)
+            .title("Prompt (Enter to submit, Ctrl+C to exit)");
+        frame.render_widget(prompt_block.clone(), area);
+        let inner = prompt_block.inner(area);
+        if inner.width == 0 || inner.height == 0 {
+            return;
+        }
+
+        let sections = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(2), Constraint::Min(1)])
+            .split(inner);
+
+        let caret_text = if self.awaiting_response {
+            "… "
+        } else if self.review.is_some() {
+            "= "
+        } else {
+            "> "
+        };
+        frame.render_widget(Paragraph::new(caret_text), sections[0]);
+        frame.render_widget(self.textarea.widget(), sections[1]);
+
+        if self.review.is_none() {
+            let cursor = self.textarea.cursor();
+            let height = sections[1].height;
+            let width = sections[1].width;
+            if height == 0 || width == 0 {
+                return;
+            }
+
+            let (prev_row, prev_col) = self.view_offset;
+            let adjust = |prev: u16, cursor: usize, len: u16| -> u16 {
+                if len == 0 {
+                    return prev;
+                }
+                let cursor = cursor as u16;
+                if cursor < prev {
+                    cursor
+                } else if prev + len <= cursor {
+                    cursor + 1 - len
+                } else {
+                    prev
+                }
+            };
+
+            let top_row = adjust(prev_row, cursor.0, height);
+            let top_col = adjust(prev_col, cursor.1, width);
+            self.view_offset = (top_row, top_col);
+
+            let visible_row = cursor.0.saturating_sub(top_row as usize) as u16;
+            let visible_col = cursor.1.saturating_sub(top_col as usize) as u16;
+            let x = sections[1].x + visible_col.min(sections[1].width.saturating_sub(1));
+            let y = sections[1].y + visible_row.min(sections[1].height.saturating_sub(1));
+            frame.set_cursor_position(Position::new(x, y));
+        }
+    }
+
     fn on_paste(&mut self, data: String) {
         if self.review.is_none() {
             self.textarea.insert_str(&data);
         }
+    }
+
+    fn reset_input(&mut self) {
+        self.textarea = build_textarea();
+        self.view_offset = (0, 0);
     }
 
     async fn submit_prompt(&mut self) -> Result<()> {
@@ -294,7 +361,7 @@ impl App {
         }
 
         if trimmed.starts_with('/') {
-            self.textarea = build_textarea();
+            self.reset_input();
             self.handle_command(trimmed)?;
             return Ok(());
         }
@@ -305,13 +372,13 @@ impl App {
                 "Missing OpenRouter API key. Set OPENROUTER_API_KEY or use plain mode /login."
                     .into(),
             );
-            self.textarea = build_textarea();
+            self.reset_input();
             return Ok(());
         }
 
         self.add_message(MessageKind::User, trimmed.to_string());
         self.history.push(trimmed.to_string());
-        self.textarea = build_textarea();
+        self.reset_input();
         self.awaiting_response = true;
 
         let cfg = self.cfg.clone();
@@ -587,11 +654,6 @@ fn target_from_backup(repo_root: &Path, backup: &Path) -> Option<PathBuf> {
 
 fn build_textarea() -> TextArea<'static> {
     let mut textarea = TextArea::default();
-    textarea.set_block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title("Prompt (Enter to submit, Ctrl+C to exit)"),
-    );
     textarea.set_placeholder_text("Describe the change you want");
     textarea.set_style(Style::default().fg(Color::Cyan));
     textarea
