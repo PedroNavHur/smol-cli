@@ -22,6 +22,8 @@ use crate::{config, diff, edits, fsutil, llm};
 
 const WELCOME_MSG: &str =
     "Smol CLI — TUI chat. Enter prompts below. y/apply, n/skip during review.";
+const PROMPT_BG: Color = Color::Rgb(20, 20, 20);
+const PROMPT_BORDER: Color = Color::Cyan;
 
 pub async fn run(model_override: Option<String>) -> Result<()> {
     let mut cfg = config::load()?;
@@ -296,6 +298,8 @@ impl App {
     fn draw_prompt(&mut self, frame: &mut Frame, area: Rect) {
         let prompt_block = Block::default()
             .borders(Borders::ALL)
+            .border_style(Style::default().fg(PROMPT_BORDER))
+            .style(Style::default().bg(PROMPT_BG))
             .title("Prompt (Enter to submit, Ctrl+C to exit)");
         frame.render_widget(prompt_block.clone(), area);
         let inner = prompt_block.inner(area);
@@ -316,7 +320,14 @@ impl App {
             '>'
         };
         let caret_text = format!("{caret_char} ");
-        frame.render_widget(Paragraph::new(caret_text), sections[0]);
+        frame.render_widget(
+            Paragraph::new(caret_text).style(Style::default().bg(PROMPT_BG).fg(PROMPT_BORDER)),
+            sections[0],
+        );
+        frame.render_widget(
+            Block::default().style(Style::default().bg(PROMPT_BG)),
+            sections[1],
+        );
         frame.render_widget(self.textarea.widget(), sections[1]);
 
         if self.review.is_none() && self.caret_visible {
