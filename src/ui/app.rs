@@ -66,6 +66,11 @@ impl App {
         }
 
         app.add_message(MessageKind::Info, WELCOME_MSG.into());
+        let location = display_repo_path(&app.repo_root);
+        app.add_message(
+            MessageKind::Info,
+            format!("You are using Smol CLI in {location}"),
+        );
 
         app
     }
@@ -642,4 +647,15 @@ fn build_textarea() -> TextArea<'static> {
     textarea.set_placeholder_text("Describe the change you want");
     textarea.set_style(Style::default().fg(PROMPT_TEXT));
     textarea
+}
+
+fn display_repo_path(path: &Path) -> String {
+    if let Ok(home) = std::env::var("HOME") {
+        let home_path = Path::new(&home);
+        if let Ok(stripped) = path.strip_prefix(home_path) {
+            let display = stripped.to_string_lossy();
+            return format!("~/{}", display.trim_start_matches('/'));
+        }
+    }
+    path.to_string_lossy().into_owned()
 }
