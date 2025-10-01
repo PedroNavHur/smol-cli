@@ -1,0 +1,34 @@
+[package]
+name = "smol-cli"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Smol CLI — a lightweight coding agent for your terminal (OpenRouter-powered)."
+repository = "https://github.com/PedroNavHur/smol-cli"
+
+[dependencies]
+anyhow = "1"
+thiserror = "1"
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time"] }
+reqwest = { version = "0.12", features = ["json", "gzip", "brotli", "deflate", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+directories = "5"
+inquire = "0.7"
+similar = "2"
+tempfile = "3"
+regex = "1"
+toml = "0.8"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
