@@ -1,0 +1,10 @@
+# ignore env
+.env
+
+# Rust Cargo build directory
+/target/
+
+# Cargo.lock for library projects (optional)
+# For executable projects, Cargo.lock is usually committed to ensure reproducible builds.
+# For libraries, it's often ignored to allow users to build with newer dependency versions.
+# Cargo.lock
