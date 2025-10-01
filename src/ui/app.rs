@@ -1,100 +1,28 @@
 use std::{
-    fs, io,
+    fs,
     path::{Path, PathBuf},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::Result;
-use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
-    execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
-};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
     prelude::*,
+    text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::{spawn, sync::mpsc::UnboundedSender};
 use tui_textarea::{Input, TextArea};
 
 use crate::{config, diff, edits, fsutil, llm};
 
+use super::theme::{PROMPT_BG, PROMPT_BORDER, PROMPT_TEXT};
+
 const WELCOME_MSG: &str =
     "Smol CLI — TUI chat. Enter prompts below. y/apply, n/skip during review.";
-const PROMPT_BG: Color = Color::Rgb(20, 20, 20);
-const PROMPT_BORDER: Color = Color::Cyan;
 
-pub async fn run(model_override: Option<String>) -> Result<()> {
-    let mut cfg = config::load()?;
-    if let Some(model) = model_override {
-        cfg.provider.model = model;
-    }
-
-    let repo_root = std::env::current_dir()?;
-
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let backend = ratatui::backend::CrosstermBackend::new(stdout);
-    let mut terminal = ratatui::Terminal::new(backend)?;
-
-    let (tx, rx) = unbounded_channel();
-    let mut app = App::new(cfg, repo_root, tx.clone());
-
-    let res = run_app(&mut terminal, &mut app, rx).await;
-
-    disable_raw_mode().ok();
-    execute!(terminal.backend_mut(), LeaveAlternateScreen).ok();
-    terminal.show_cursor().ok();
-
-    res
-}
-
-async fn run_app(
-    terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>,
-    app: &mut App,
-    mut rx: UnboundedReceiver<AsyncEvent>,
-) -> Result<()> {
-    const BLINK_INTERVAL: Duration = Duration::from_millis(500);
-    let mut last_blink = Instant::now();
-    loop {
-        while let Ok(event) = rx.try_recv() {
-            app.handle_async(event);
-            last_blink = Instant::now();
-        }
-
-        if last_blink.elapsed() >= BLINK_INTERVAL {
-            app.toggle_caret();
-            last_blink = Instant::now();
-        }
-
-        terminal.draw(|frame| app.draw(frame))?;
-
-        if app.should_quit {
-            break;
-        }
-
-        if event::poll(Duration::from_millis(100))? {
-            match event::read()? {
-                Event::Key(key) => {
-                    app.on_key(key).await?;
-                    last_blink = Instant::now();
-                }
-                Event::Paste(data) => {
-                    app.on_paste(data);
-                    last_blink = Instant::now();
-                }
-                Event::Resize(_, _) => {}
-                Event::FocusGained | Event::FocusLost | Event::Mouse(_) => {}
-            }
-        }
-    }
-
-    Ok(())
-}
-
-struct App {
+pub(super) struct App {
     cfg: config::AppConfig,
     repo_root: PathBuf,
     tx: UnboundedSender<AsyncEvent>,
@@ -110,7 +38,11 @@ struct App {
 }
 
 impl App {
-    fn new(cfg: config::AppConfig, repo_root: PathBuf, tx: UnboundedSender<AsyncEvent>) -> Self {
+    pub(super) fn new(
+        cfg: config::AppConfig,
+        repo_root: PathBuf,
+        tx: UnboundedSender<AsyncEvent>,
+    ) -> Self {
         let mut app = Self {
             cfg,
             repo_root,
@@ -136,6 +68,108 @@ impl App {
         app.add_message(MessageKind::Info, WELCOME_MSG.into());
 
         app
+    }
+
+    pub(super) fn draw(&mut self, frame: &mut Frame) {
+        let layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(70), Constraint::Percentage(30)].as_ref())
+            .split(frame.area());
+
+        let history = self.render_history();
+        let history_block = Paragraph::new(history)
+            .block(Block::default().borders(Borders::ALL).title("Activity"))
+            .wrap(Wrap { trim: false });
+        frame.render_widget(history_block, layout[0]);
+
+        if let Some(review) = &self.review {
+            let review_block = self.render_review(review);
+            frame.render_widget(review_block, layout[0]);
+        }
+
+        self.draw_prompt(frame, layout[1]);
+    }
+
+    pub(super) async fn on_key(&mut self, key: KeyEvent) -> Result<()> {
+        self.caret_visible = true;
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.should_quit = true;
+            return Ok(());
+        }
+
+        if self.review.is_some() {
+            match key.code {
+                KeyCode::Char('y') => {
+                    if let Err(err) = self.apply_current() {
+                        self.add_message(MessageKind::Error, format!("Apply failed: {err}"));
+                    }
+                }
+                KeyCode::Char('n') => {
+                    self.skip_current("Skipped by user");
+                }
+                KeyCode::Char('b') => {
+                    self.review = None;
+                    self.add_message(MessageKind::Info, "Exited review.".into());
+                    self.caret_visible = true;
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+
+        if key.code == KeyCode::Char('z') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.undo_last();
+            return Ok(());
+        }
+
+        if key.code == KeyCode::Enter && key.modifiers.is_empty() {
+            self.submit_prompt().await?;
+            return Ok(());
+        }
+
+        let input = Input::from(Event::Key(key));
+        self.textarea.input(input);
+        Ok(())
+    }
+
+    pub(super) fn on_paste(&mut self, data: String) {
+        if self.review.is_none() {
+            self.textarea.insert_str(&data);
+            self.caret_visible = true;
+        }
+    }
+
+    pub(super) fn handle_async(&mut self, event: AsyncEvent) {
+        self.awaiting_response = false;
+        self.caret_visible = true;
+        match event {
+            AsyncEvent::Error(err) => self.add_message(MessageKind::Error, err),
+            AsyncEvent::ParseError { error, raw } => {
+                self.add_message(
+                    MessageKind::Error,
+                    format!("Model did not return valid edits: {error}"),
+                );
+                self.add_message(MessageKind::Info, format!("Raw response: {raw}"));
+            }
+            AsyncEvent::Edits { batch } => {
+                if batch.edits.is_empty() {
+                    self.add_message(MessageKind::Info, "No edits proposed.".into());
+                } else if let Err(err) = self.begin_review(batch) {
+                    self.add_message(
+                        MessageKind::Error,
+                        format!("Failed to prepare edits: {err}"),
+                    );
+                }
+            }
+        }
+    }
+
+    pub(super) fn toggle_caret(&mut self) {
+        self.caret_visible = !self.caret_visible;
+    }
+
+    pub(super) fn should_quit(&self) -> bool {
+        self.should_quit
     }
 
     fn add_message(&mut self, kind: MessageKind, content: String) {
@@ -191,108 +225,6 @@ impl App {
             _ => self.add_message(MessageKind::Warn, "Unknown command. /help".into()),
         }
         Ok(())
-    }
-
-    async fn on_key(&mut self, key: KeyEvent) -> Result<()> {
-        self.caret_visible = true;
-        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            self.should_quit = true;
-            return Ok(());
-        }
-
-        if self.review.is_some() {
-            match key.code {
-                KeyCode::Char('y') => {
-                    if let Err(err) = self.apply_current() {
-                        self.add_message(MessageKind::Error, format!("Apply failed: {err}"));
-                    }
-                }
-                KeyCode::Char('n') => {
-                    self.skip_current("Skipped by user");
-                }
-                KeyCode::Char('b') => {
-                    self.review = None;
-                    self.add_message(MessageKind::Info, "Exited review.".into());
-                    self.caret_visible = true;
-                }
-                _ => {}
-            }
-            return Ok(());
-        }
-
-        if key.code == KeyCode::Char('z') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            self.undo_last();
-            return Ok(());
-        }
-
-        if key.code == KeyCode::Enter && key.modifiers.is_empty() {
-            self.submit_prompt().await?;
-            return Ok(());
-        }
-
-        let input = Input::from(Event::Key(key));
-        self.textarea.input(input);
-        Ok(())
-    }
-
-    fn draw(&mut self, frame: &mut Frame) {
-        let layout = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(70), Constraint::Percentage(30)].as_ref())
-            .split(frame.area());
-
-        let history = self.render_history();
-        let history_block = Paragraph::new(history)
-            .block(Block::default().borders(Borders::ALL).title("Activity"))
-            .wrap(Wrap { trim: false });
-        frame.render_widget(history_block, layout[0]);
-
-        if let Some(review) = &self.review {
-            let review_block = self.render_review(review);
-            frame.render_widget(review_block, layout[0]);
-        }
-
-        self.draw_prompt(frame, layout[1]);
-    }
-
-    fn render_history(&self) -> Vec<Line<'static>> {
-        self.messages
-            .iter()
-            .map(|m| {
-                let style = match m.kind {
-                    MessageKind::User => Style::default().fg(Color::Cyan),
-                    MessageKind::Warn => Style::default().fg(Color::Yellow),
-                    MessageKind::Error => Style::default().fg(Color::Red),
-                    MessageKind::Info => Style::default().fg(Color::Gray),
-                };
-                Line::from(Span::styled(m.content.clone(), style))
-            })
-            .collect()
-    }
-
-    fn render_review(&self, review: &ReviewState) -> Paragraph<'static> {
-        let mut lines = Vec::new();
-        if let Some(current) = review.current_edit() {
-            lines.push(Line::raw(format!(
-                "Reviewing {} ({} of {})",
-                current.path,
-                review.index + 1,
-                review.edits.len()
-            )));
-            if let Some(r) = &current.rationale {
-                lines.push(Line::raw(format!("Reason: {r}")));
-            }
-            lines.push(Line::raw("Press y=apply, n=skip, b=cancel review"));
-            lines.push(Line::raw("────────────────────────────────"));
-            lines.extend(current.diff.lines().map(|l| Line::raw(l.to_string())));
-        }
-        Paragraph::new(lines)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Proposed edit"),
-            )
-            .wrap(Wrap { trim: false })
     }
 
     fn draw_prompt(&mut self, frame: &mut Frame, area: Rect) {
@@ -365,21 +297,50 @@ impl App {
         }
     }
 
-    fn on_paste(&mut self, data: String) {
-        if self.review.is_none() {
-            self.textarea.insert_str(&data);
-            self.caret_visible = true;
+    fn render_history(&self) -> Vec<Line<'static>> {
+        self.messages
+            .iter()
+            .map(|m| {
+                let style = match m.kind {
+                    MessageKind::User => Style::default().fg(Color::Cyan),
+                    MessageKind::Warn => Style::default().fg(Color::Yellow),
+                    MessageKind::Error => Style::default().fg(Color::Red),
+                    MessageKind::Info => Style::default().fg(Color::Gray),
+                };
+                Line::from(Span::styled(m.content.clone(), style))
+            })
+            .collect()
+    }
+
+    fn render_review(&self, review: &ReviewState) -> Paragraph<'static> {
+        let mut lines = Vec::new();
+        if let Some(current) = review.current_edit() {
+            lines.push(Line::raw(format!(
+                "Reviewing {} ({} of {})",
+                current.path,
+                review.index + 1,
+                review.edits.len()
+            )));
+            if let Some(r) = &current.rationale {
+                lines.push(Line::raw(format!("Reason: {r}")));
+            }
+            lines.push(Line::raw("Press y=apply, n=skip, b=cancel review"));
+            lines.push(Line::raw("────────────────────────────────"));
+            lines.extend(current.diff.lines().map(|l| Line::raw(l.to_string())));
         }
+        Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Proposed edit"),
+            )
+            .wrap(Wrap { trim: false })
     }
 
     fn reset_input(&mut self) {
         self.textarea = build_textarea();
         self.view_offset = (0, 0);
         self.caret_visible = true;
-    }
-
-    fn toggle_caret(&mut self) {
-        self.caret_visible = !self.caret_visible;
     }
 
     async fn submit_prompt(&mut self) -> Result<()> {
@@ -423,37 +384,12 @@ impl App {
         let tx = self.tx.clone();
         let prompt = trimmed.to_string();
 
-        tokio::spawn(async move {
+        spawn(async move {
             let event = async_handle_prompt(cfg, prompt).await;
             let _ = tx.send(event);
         });
 
         Ok(())
-    }
-
-    fn handle_async(&mut self, event: AsyncEvent) {
-        self.awaiting_response = false;
-        self.caret_visible = true;
-        match event {
-            AsyncEvent::Error(err) => self.add_message(MessageKind::Error, err),
-            AsyncEvent::ParseError { error, raw } => {
-                self.add_message(
-                    MessageKind::Error,
-                    format!("Model did not return valid edits: {error}"),
-                );
-                self.add_message(MessageKind::Info, format!("Raw response: {raw}"));
-            }
-            AsyncEvent::Edits { batch } => {
-                if batch.edits.is_empty() {
-                    self.add_message(MessageKind::Info, "No edits proposed.".into());
-                } else if let Err(err) = self.begin_review(batch) {
-                    self.add_message(
-                        MessageKind::Error,
-                        format!("Failed to prepare edits: {err}"),
-                    );
-                }
-            }
-        }
     }
 
     fn begin_review(&mut self, batch: edits::EditBatch) -> Result<()> {
@@ -633,7 +569,7 @@ enum MessageKind {
     Error,
 }
 
-enum AsyncEvent {
+pub(super) enum AsyncEvent {
     Error(String),
     ParseError { error: String, raw: String },
     Edits { batch: edits::EditBatch },
@@ -697,6 +633,6 @@ fn target_from_backup(repo_root: &Path, backup: &Path) -> Option<PathBuf> {
 fn build_textarea() -> TextArea<'static> {
     let mut textarea = TextArea::default();
     textarea.set_placeholder_text("Describe the change you want");
-    textarea.set_style(Style::default().fg(Color::Cyan));
+    textarea.set_style(Style::default().fg(PROMPT_TEXT));
     textarea
 }

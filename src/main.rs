@@ -9,7 +9,7 @@ mod diff;
 mod edits;
 mod fsutil;
 mod llm;
-mod tui;
+mod ui;
 
 #[derive(Parser)]
 #[command(
@@ -61,7 +61,7 @@ async fn main() -> anyhow::Result<()> {
             tui: use_tui,
         } => {
             if use_tui {
-                tui::run(model).await?;
+                ui::run(model).await?;
             } else {
                 chat::run(model).await?;
             }
