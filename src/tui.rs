@@ -1,7 +1,7 @@
 use std::{
     fs, io,
     path::{Path, PathBuf},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::Result;
@@ -54,9 +54,17 @@ async fn run_app(
     app: &mut App,
     mut rx: UnboundedReceiver<AsyncEvent>,
 ) -> Result<()> {
+    const BLINK_INTERVAL: Duration = Duration::from_millis(500);
+    let mut last_blink = Instant::now();
     loop {
         while let Ok(event) = rx.try_recv() {
             app.handle_async(event);
+            last_blink = Instant::now();
+        }
+
+        if last_blink.elapsed() >= BLINK_INTERVAL {
+            app.toggle_caret();
+            last_blink = Instant::now();
         }
 
         terminal.draw(|frame| app.draw(frame))?;
@@ -67,8 +75,14 @@ async fn run_app(
 
         if event::poll(Duration::from_millis(100))? {
             match event::read()? {
-                Event::Key(key) => app.on_key(key).await?,
-                Event::Paste(data) => app.on_paste(data),
+                Event::Key(key) => {
+                    app.on_key(key).await?;
+                    last_blink = Instant::now();
+                }
+                Event::Paste(data) => {
+                    app.on_paste(data);
+                    last_blink = Instant::now();
+                }
                 Event::Resize(_, _) => {}
                 Event::FocusGained | Event::FocusLost | Event::Mouse(_) => {}
             }
@@ -90,6 +104,7 @@ struct App {
     review: Option<ReviewState>,
     last_backups: Vec<PathBuf>,
     should_quit: bool,
+    caret_visible: bool,
 }
 
 impl App {
@@ -106,6 +121,7 @@ impl App {
             review: None,
             last_backups: Vec::new(),
             should_quit: false,
+            caret_visible: true,
         };
 
         if app.cfg.auth.api_key.is_empty() {
@@ -128,6 +144,7 @@ impl App {
     }
 
     fn handle_command(&mut self, input: &str) -> Result<()> {
+        self.caret_visible = true;
         match input {
             "/help" => self.add_message(
                 MessageKind::Info,
@@ -175,6 +192,7 @@ impl App {
     }
 
     async fn on_key(&mut self, key: KeyEvent) -> Result<()> {
+        self.caret_visible = true;
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.should_quit = true;
             return Ok(());
@@ -193,6 +211,7 @@ impl App {
                 KeyCode::Char('b') => {
                     self.review = None;
                     self.add_message(MessageKind::Info, "Exited review.".into());
+                    self.caret_visible = true;
                 }
                 _ => {}
             }
@@ -289,17 +308,18 @@ impl App {
             .constraints([Constraint::Length(2), Constraint::Min(1)])
             .split(inner);
 
-        let caret_text = if self.awaiting_response {
-            "… "
+        let caret_char = if self.awaiting_response {
+            '.'
         } else if self.review.is_some() {
-            "= "
+            '='
         } else {
-            "> "
+            '>'
         };
+        let caret_text = format!("{caret_char} ");
         frame.render_widget(Paragraph::new(caret_text), sections[0]);
         frame.render_widget(self.textarea.widget(), sections[1]);
 
-        if self.review.is_none() {
+        if self.review.is_none() && self.caret_visible {
             let cursor = self.textarea.cursor();
             let height = sections[1].height;
             let width = sections[1].width;
@@ -337,12 +357,18 @@ impl App {
     fn on_paste(&mut self, data: String) {
         if self.review.is_none() {
             self.textarea.insert_str(&data);
+            self.caret_visible = true;
         }
     }
 
     fn reset_input(&mut self) {
         self.textarea = build_textarea();
         self.view_offset = (0, 0);
+        self.caret_visible = true;
+    }
+
+    fn toggle_caret(&mut self) {
+        self.caret_visible = !self.caret_visible;
     }
 
     async fn submit_prompt(&mut self) -> Result<()> {
@@ -380,6 +406,7 @@ impl App {
         self.history.push(trimmed.to_string());
         self.reset_input();
         self.awaiting_response = true;
+        self.caret_visible = true;
 
         let cfg = self.cfg.clone();
         let tx = self.tx.clone();
@@ -395,6 +422,7 @@ impl App {
 
     fn handle_async(&mut self, event: AsyncEvent) {
         self.awaiting_response = false;
+        self.caret_visible = true;
         match event {
             AsyncEvent::Error(err) => self.add_message(MessageKind::Error, err),
             AsyncEvent::ParseError { error, raw } => {
@@ -485,6 +513,7 @@ impl App {
             index: 0,
             backup_root,
         });
+        self.caret_visible = true;
         if let Some(review) = &self.review {
             self.add_message(
                 MessageKind::Info,
@@ -533,6 +562,7 @@ impl App {
             if review.index >= review.edits.len() {
                 self.review = None;
                 self.add_message(MessageKind::Info, "Review complete.".into());
+                self.caret_visible = true;
             }
         }
     }
@@ -553,6 +583,7 @@ impl App {
         } else {
             self.add_message(MessageKind::Info, "Nothing to undo.".into());
         }
+        self.caret_visible = true;
     }
 }
 
