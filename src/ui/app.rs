@@ -128,7 +128,7 @@ impl App {
         }
 
         if key.code == KeyCode::Tab && key.modifiers.is_empty() {
-            if self.try_autocomplete_command() {
+            if self.try_accept_suggestion() {
                 return Ok(());
             }
         }
@@ -275,10 +275,10 @@ impl App {
             return;
         }
 
-        let suggestion_info = self.gather_suggestions();
-        let show_suggestions = suggestion_info
+        let suggestion = self.gather_suggestions();
+        let show_suggestions = suggestion
             .as_ref()
-            .map(|info| !info.matches.is_empty())
+            .map(|s| !s.matches.is_empty())
             .unwrap_or(false)
             && inner.height >= 2;
 
@@ -310,8 +310,8 @@ impl App {
         );
         frame.render_widget(self.textarea.widget(), sections[1]);
 
-        if let (Some(area), Some(info)) = (suggestion_area, suggestion_info.as_ref()) {
-            let label = match info.kind {
+        if let (Some(area), Some(info)) = (suggestion_area, suggestion.as_ref()) {
+            let label = match info.token.kind {
                 SuggestionKind::Command => "Commands",
                 SuggestionKind::File => "Files",
             };
@@ -351,11 +351,11 @@ impl App {
                 let visible_row = cursor.0.saturating_sub(top_row as usize) as u16;
                 let visible_col = cursor.1.saturating_sub(top_col as usize) as u16;
 
-                if let Some(info) = suggestion_info.as_ref() {
+                if let Some(info) = suggestion.as_ref() {
                     if let Some(rem) = info
                         .matches
                         .first()
-                        .and_then(|s| s.strip_prefix(&info.prefix))
+                        .and_then(|s| s.strip_prefix(&info.token.prefix))
                     {
                         if !rem.is_empty() {
                             let x = sections[1].x
@@ -386,97 +386,119 @@ impl App {
         }
     }
 
-    fn try_autocomplete_command(&mut self) -> bool {
+    fn try_accept_suggestion(&mut self) -> bool {
         let info = match self.gather_suggestions() {
             Some(info) if !info.matches.is_empty() => info,
             _ => return false,
         };
 
-        let suggestion = info.matches[0].clone();
+        let replacement = match info.token.kind {
+            SuggestionKind::Command => {
+                let mut text = info.matches[0].clone();
+                if !text.ends_with(' ') {
+                    text.push(' ');
+                }
+                text
+            }
+            SuggestionKind::File => info.matches[0].clone(),
+        };
 
         let mut lines = self.textarea.lines().to_vec();
-        if lines.is_empty() {
-            lines.push(format!("{} ", suggestion));
-        } else if let Some(last) = lines.last_mut() {
-            *last = format!("{} ", suggestion);
-        }
+        let line = match lines.get_mut(info.token.row) {
+            Some(line) => line,
+            None => return false,
+        };
 
-        self.set_textarea_lines(lines);
+        let start_byte = col_to_byte(line, info.token.start_col);
+        let end_byte = col_to_byte(line, info.token.cursor_col);
+        let mut new_line = String::new();
+        new_line.push_str(&line[..start_byte]);
+        new_line.push_str(&replacement);
+        new_line.push_str(&line[end_byte..]);
+        *line = new_line;
+
+        let new_cursor_col = info.token.start_col + replacement.chars().count();
+        self.set_textarea_with_cursor(lines, info.token.row, new_cursor_col);
         self.caret_visible = true;
         true
     }
 
-    fn current_command_prefix(&self) -> Option<String> {
-        let lines = self.textarea.lines();
-        let raw = lines.last()?;
-        let trimmed = raw.trim_end();
-        if !trimmed.starts_with('/') {
-            return None;
-        }
-        if trimmed.len() > 1 && trimmed[1..].chars().any(char::is_whitespace) {
-            return None;
-        }
-        Some(trimmed.to_string())
-    }
-
-    fn command_matches(prefix: &str) -> Vec<&'static str> {
-        COMMANDS
-            .iter()
-            .copied()
-            .filter(|cmd| cmd.starts_with(prefix))
-            .collect()
-    }
-
-    fn set_textarea_lines(&mut self, lines: Vec<String>) {
+    fn set_textarea_with_cursor(&mut self, lines: Vec<String>, row: usize, col: usize) {
         let mut textarea = TextArea::from(lines);
         textarea.set_placeholder_text("Describe the change you want");
         textarea.set_style(Style::default().fg(PROMPT_TEXT));
-        textarea.move_cursor(CursorMove::Bottom);
-        textarea.move_cursor(CursorMove::End);
+        textarea.move_cursor(CursorMove::Jump(row as u16, col as u16));
         self.textarea = textarea;
         self.view_offset = (0, 0);
     }
 
     fn gather_suggestions(&self) -> Option<SuggestionInfo> {
-        if let Some(prefix) = self.current_command_prefix() {
-            let matches = Self::command_matches(&prefix)
-                .into_iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>();
+        if let Some(token) = self.current_command_token() {
+            let matches = Self::command_matches(&token.prefix);
             if !matches.is_empty() {
-                return Some(SuggestionInfo {
-                    prefix,
-                    matches,
-                    kind: SuggestionKind::Command,
-                });
+                return Some(SuggestionInfo { token, matches });
             }
         }
 
-        if let Some(prefix) = self.current_file_prefix() {
-            let matches = self.file_matches(&prefix);
+        if let Some(token) = self.current_file_token() {
+            let matches = self.file_matches(&token.prefix);
             if !matches.is_empty() {
-                return Some(SuggestionInfo {
-                    prefix,
-                    matches,
-                    kind: SuggestionKind::File,
-                });
+                return Some(SuggestionInfo { token, matches });
             }
         }
 
         None
     }
 
-    fn current_file_prefix(&self) -> Option<String> {
+    fn current_command_token(&self) -> Option<TokenInfo> {
+        self.token_at_cursor('/', true, SuggestionKind::Command)
+    }
+
+    fn current_file_token(&self) -> Option<TokenInfo> {
+        self.token_at_cursor('@', true, SuggestionKind::File)
+    }
+
+    fn token_at_cursor(
+        &self,
+        marker: char,
+        require_boundary: bool,
+        kind: SuggestionKind,
+    ) -> Option<TokenInfo> {
+        let (row, col) = self.textarea.cursor();
         let lines = self.textarea.lines();
-        let raw = lines.last()?;
-        let trimmed = raw.trim_end();
-        if !trimmed.starts_with('@') {
+        let line = lines.get(row)?;
+        let cursor_byte = col_to_byte(line, col);
+        let upto_cursor = &line[..cursor_byte];
+        let start_byte = upto_cursor.rfind(marker)?;
+
+        if require_boundary && start_byte > 0 {
+            if let Some(prev) = line[..start_byte].chars().last() {
+                if !is_token_boundary(prev) {
+                    return None;
+                }
+            }
+        }
+
+        let prefix = &line[start_byte..cursor_byte];
+        if prefix.len() > 1 && prefix[1..].chars().any(char::is_whitespace) {
             return None;
         }
-        if trimmed.len() > 1 && trimmed[1..].chars().any(char::is_whitespace) {
-            return None;
-        }
-        Some(trimmed.to_string())
+
+        Some(TokenInfo {
+            prefix: prefix.to_string(),
+            row,
+            start_col: line[..start_byte].chars().count(),
+            cursor_col: col,
+            kind,
+        })
+    }
+
+    fn command_matches(prefix: &str) -> Vec<String> {
+        COMMANDS
+            .iter()
+            .filter(|cmd| cmd.starts_with(prefix))
+            .map(|s| (*s).to_string())
+            .collect()
     }
 
     fn file_matches(&self, prefix: &str) -> Vec<String> {
@@ -489,22 +511,24 @@ impl App {
             .filter_map(Result::ok)
         {
             let path = entry.path();
-            if entry.file_type().is_dir() {
-                continue;
-            }
             let rel = match path.strip_prefix(&self.repo_root) {
                 Ok(rel) => rel,
                 Err(_) => continue,
             };
             let rel_str = rel.to_string_lossy().replace('\\', "/");
             if rel_str.starts_with(search) {
-                results.push(format!("@{}", rel_str));
+                if entry.file_type().is_dir() {
+                    results.push(format!("@{}/", rel_str));
+                } else {
+                    results.push(format!("@{}", rel_str));
+                }
             }
             if results.len() >= 12 {
                 break;
             }
         }
 
+        results.sort();
         results
     }
 
@@ -838,14 +862,21 @@ enum MessageKind {
 }
 
 struct SuggestionInfo {
-    prefix: String,
+    token: TokenInfo,
     matches: Vec<String>,
-    kind: SuggestionKind,
 }
 
 enum SuggestionKind {
     Command,
     File,
+}
+
+struct TokenInfo {
+    prefix: String,
+    row: usize,
+    start_col: usize,
+    cursor_col: usize,
+    kind: SuggestionKind,
 }
 
 pub(super) enum AsyncEvent {
@@ -925,4 +956,23 @@ fn display_repo_path(path: &Path) -> String {
         }
     }
     path.to_string_lossy().into_owned()
+}
+
+fn col_to_byte(line: &str, col: usize) -> usize {
+    let mut count = 0;
+    for (idx, _) in line.char_indices() {
+        if count == col {
+            return idx;
+        }
+        count += 1;
+    }
+    line.len()
+}
+
+fn is_token_boundary(ch: char) -> bool {
+    ch.is_whitespace()
+        || matches!(
+            ch,
+            '(' | '[' | '{' | '<' | '>' | ',' | ';' | ':' | '-' | '/' | '"' | '\'' | '='
+        )
 }
