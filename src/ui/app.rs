@@ -17,7 +17,7 @@ use tui_textarea::{Input, TextArea};
 
 use crate::{config, diff, edits, fsutil, llm};
 
-use super::theme::{PROMPT_BG, PROMPT_BORDER, PROMPT_TEXT};
+use super::theme::{PROMPT_BG, PROMPT_BORDER, PROMPT_TEXT, UI_BORDER_TYPE};
 
 const WELCOME_MSG: &str =
     "Smol CLI — TUI chat. Enter prompts below. y/apply, n/skip during review.";
@@ -78,7 +78,12 @@ impl App {
 
         let history = self.render_history();
         let history_block = Paragraph::new(history)
-            .block(Block::default().borders(Borders::ALL).title("Activity"))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(UI_BORDER_TYPE)
+                    .title("Activity"),
+            )
             .wrap(Wrap { trim: false });
         frame.render_widget(history_block, layout[0]);
 
@@ -230,6 +235,7 @@ impl App {
     fn draw_prompt(&mut self, frame: &mut Frame, area: Rect) {
         let prompt_block = Block::default()
             .borders(Borders::ALL)
+            .border_type(UI_BORDER_TYPE)
             .border_style(Style::default().fg(PROMPT_BORDER))
             .style(Style::default().bg(PROMPT_BG))
             .title("Prompt (Enter to submit, Ctrl+C to exit)");
@@ -332,6 +338,7 @@ impl App {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
+                    .border_type(UI_BORDER_TYPE)
                     .title("Proposed edit"),
             )
             .wrap(Wrap { trim: false })
