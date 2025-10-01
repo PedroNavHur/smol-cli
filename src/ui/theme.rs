@@ -2,7 +2,7 @@ use ratatui::{style::Color, widgets::BorderType};
 
 // Color Palette
 // pub const GUNMETAL: Color = Color::Rgb(40, 44, 52);
-pub const BLUE_MUNSELL: Color = Color::Rgb(59, 142, 165);
+// pub const BLUE_MUNSELL: Color = Color::Rgb(59, 142, 165);
 pub const VANILLA: Color = Color::Rgb(245, 238, 158);
 pub const SANDY_BROWN: Color = Color::Rgb(244, 158, 76);
 pub const FIRE_BRICK: Color = Color::Rgb(171, 52, 40);

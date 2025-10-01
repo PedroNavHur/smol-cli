@@ -19,7 +19,7 @@ pub(super) fn draw(app: &mut App, frame: &mut Frame) {
         .direction(Direction::Vertical)
         .constraints(
             [
-                Constraint::Length(5),
+                Constraint::Length(3),
                 Constraint::Percentage(65),
                 Constraint::Percentage(28),
                 Constraint::Length(2),
