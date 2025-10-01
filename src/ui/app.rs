@@ -17,7 +17,10 @@ use tui_textarea::{Input, TextArea};
 
 use crate::{config, diff, edits, fsutil, llm};
 
-use super::theme::{PROMPT_BG, PROMPT_BORDER, PROMPT_TEXT, UI_BORDER_TYPE};
+use super::theme::{
+    ACTIVITY_BORDER, BANNER_BORDER, BANNER_CAT_EAR, BANNER_CAT_EYE, BANNER_CAT_MOUTH,
+    BANNER_CAT_WHISKER, BANNER_TEXT, PROMPT_BORDER, PROMPT_TEXT, UI_BORDER_TYPE,
+};
 
 const WELCOME_MSG: &str =
     "Smol CLI — TUI chat. Enter prompts below. y/apply, n/skip during review.";
@@ -78,8 +81,17 @@ impl App {
     pub(super) fn draw(&mut self, frame: &mut Frame) {
         let layout = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(70), Constraint::Percentage(30)].as_ref())
+            .constraints(
+                [
+                    Constraint::Length(5),
+                    Constraint::Percentage(70),
+                    Constraint::Percentage(30),
+                ]
+                .as_ref(),
+            )
             .split(frame.area());
+
+        self.draw_banner(frame, layout[0]);
 
         let history = self.render_history();
         let history_block = Paragraph::new(history)
@@ -87,17 +99,18 @@ impl App {
                 Block::default()
                     .borders(Borders::ALL)
                     .border_type(UI_BORDER_TYPE)
+                    .border_style(Style::default().fg(ACTIVITY_BORDER))
                     .title("Activity"),
             )
             .wrap(Wrap { trim: false });
-        frame.render_widget(history_block, layout[0]);
+        frame.render_widget(history_block, layout[1]);
 
         if let Some(review) = &self.review {
             let review_block = self.render_review(review);
-            frame.render_widget(review_block, layout[0]);
+            frame.render_widget(review_block, layout[1]);
         }
 
-        self.draw_prompt(frame, layout[1]);
+        self.draw_prompt(frame, layout[2]);
     }
 
     pub(super) async fn on_key(&mut self, key: KeyEvent) -> Result<()> {
@@ -242,7 +255,6 @@ impl App {
             .borders(Borders::ALL)
             .border_type(UI_BORDER_TYPE)
             .border_style(Style::default().fg(PROMPT_BORDER))
-            .style(Style::default().bg(PROMPT_BG))
             .title("Prompt (Enter to submit, Ctrl+C to exit)");
         frame.render_widget(prompt_block.clone(), area);
         let inner = prompt_block.inner(area);
@@ -264,12 +276,8 @@ impl App {
         };
         let caret_text = format!("{caret_char} ");
         frame.render_widget(
-            Paragraph::new(caret_text).style(Style::default().bg(PROMPT_BG).fg(PROMPT_BORDER)),
+            Paragraph::new(caret_text).style(Style::default().fg(PROMPT_BORDER)),
             sections[0],
-        );
-        frame.render_widget(
-            Block::default().style(Style::default().bg(PROMPT_BG)),
-            sections[1],
         );
         frame.render_widget(self.textarea.widget(), sections[1]);
 
@@ -306,6 +314,39 @@ impl App {
             let y = sections[1].y + visible_row.min(sections[1].height.saturating_sub(1));
             frame.set_cursor_position(Position::new(x, y));
         }
+    }
+
+    fn draw_banner(&self, frame: &mut Frame, area: Rect) {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(UI_BORDER_TYPE)
+            .border_style(Style::default().fg(BANNER_BORDER))
+            .title("Smol CLI");
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        if inner.height == 0 || inner.width == 0 {
+            return;
+        }
+
+        let cat_line = Line::from(vec![
+            Span::styled("  (", Style::default().fg(BANNER_TEXT)),
+            Span::styled("=", Style::default().fg(BANNER_CAT_WHISKER)),
+            Span::styled("^", Style::default().fg(BANNER_CAT_EAR)),
+            Span::styled("･", Style::default().fg(BANNER_CAT_EYE)),
+            Span::styled("ω", Style::default().fg(BANNER_CAT_MOUTH)),
+            Span::styled("･", Style::default().fg(BANNER_CAT_EYE)),
+            Span::styled("^", Style::default().fg(BANNER_CAT_EAR)),
+            Span::styled("=", Style::default().fg(BANNER_CAT_WHISKER)),
+            Span::styled(")", Style::default().fg(BANNER_TEXT)),
+            Span::raw("  "),
+            Span::styled(
+                "Smol - a minimal coding agent",
+                Style::default().fg(BANNER_TEXT),
+            ),
+        ]);
+        let lines = vec![cat_line];
+        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+        frame.render_widget(paragraph, inner);
     }
 
     fn render_history(&self) -> Vec<Line<'static>> {
