@@ -14,6 +14,7 @@ use ratatui::{
 };
 use tokio::{spawn, sync::mpsc::UnboundedSender};
 use tui_textarea::{CursorMove, Input, TextArea};
+use walkdir::WalkDir;
 
 use crate::{config, diff, edits, fsutil, llm};
 
@@ -274,13 +275,14 @@ impl App {
             return;
         }
 
-        let prefix = self.current_command_prefix();
-        let suggestions = prefix
+        let suggestion_info = self.gather_suggestions();
+        let show_suggestions = suggestion_info
             .as_ref()
-            .map(|p| Self::command_matches(p))
-            .unwrap_or_default();
+            .map(|info| !info.matches.is_empty())
+            .unwrap_or(false)
+            && inner.height >= 2;
 
-        let (input_area, suggestion_area) = if !suggestions.is_empty() && inner.height >= 2 {
+        let (input_area, suggestion_area) = if show_suggestions {
             let splits = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Min(1), Constraint::Length(1)].as_ref())
@@ -302,15 +304,18 @@ impl App {
         } else {
             '>'
         };
-        let caret_text = format!("{caret_char} ");
         frame.render_widget(
-            Paragraph::new(caret_text).style(Style::default().fg(PROMPT_BORDER)),
+            Paragraph::new(format!("{caret_char} ")).style(Style::default().fg(PROMPT_BORDER)),
             sections[0],
         );
         frame.render_widget(self.textarea.widget(), sections[1]);
 
-        if let Some(area) = suggestion_area {
-            let text = format!("Commands: {}", suggestions.join("   "));
+        if let (Some(area), Some(info)) = (suggestion_area, suggestion_info.as_ref()) {
+            let label = match info.kind {
+                SuggestionKind::Command => "Commands",
+                SuggestionKind::File => "Files",
+            };
+            let text = format!("{}: {}", label, info.matches.join("   "));
             if !text.is_empty() {
                 let suggestion_para = Paragraph::new(text)
                     .style(Style::default().fg(PROMPT_TEXT))
@@ -345,25 +350,29 @@ impl App {
 
                 let visible_row = cursor.0.saturating_sub(top_row as usize) as u16;
                 let visible_col = cursor.1.saturating_sub(top_col as usize) as u16;
-                let hint = prefix
-                    .as_ref()
-                    .and_then(|p| suggestions.first().and_then(|s| s.strip_prefix(p.as_str())));
-                if let Some(rem) = hint {
-                    if !rem.is_empty() {
-                        let x =
-                            sections[1].x + visible_col.min(sections[1].width.saturating_sub(1));
-                        let y =
-                            sections[1].y + visible_row.min(sections[1].height.saturating_sub(1));
-                        let max_width =
-                            sections[1].width.saturating_sub(visible_col).max(0) as usize;
-                        if max_width > 0 {
-                            frame.buffer_mut().set_stringn(
-                                x,
-                                y,
-                                rem,
-                                max_width,
-                                Style::default().fg(PROMPT_TEXT).add_modifier(Modifier::DIM),
-                            );
+
+                if let Some(info) = suggestion_info.as_ref() {
+                    if let Some(rem) = info
+                        .matches
+                        .first()
+                        .and_then(|s| s.strip_prefix(&info.prefix))
+                    {
+                        if !rem.is_empty() {
+                            let x = sections[1].x
+                                + visible_col.min(sections[1].width.saturating_sub(1));
+                            let y = sections[1].y
+                                + visible_row.min(sections[1].height.saturating_sub(1));
+                            let max_width =
+                                sections[1].width.saturating_sub(visible_col).max(0) as usize;
+                            if max_width > 0 {
+                                frame.buffer_mut().set_stringn(
+                                    x,
+                                    y,
+                                    rem,
+                                    max_width,
+                                    Style::default().fg(PROMPT_TEXT).add_modifier(Modifier::DIM),
+                                );
+                            }
                         }
                     }
                 }
@@ -378,16 +387,12 @@ impl App {
     }
 
     fn try_autocomplete_command(&mut self) -> bool {
-        let prefix = match self.current_command_prefix() {
-            Some(p) => p,
-            None => return false,
+        let info = match self.gather_suggestions() {
+            Some(info) if !info.matches.is_empty() => info,
+            _ => return false,
         };
 
-        let suggestions = Self::command_matches(&prefix);
-        let suggestion = match suggestions.first() {
-            Some(s) => *s,
-            None => return false,
-        };
+        let suggestion = info.matches[0].clone();
 
         let mut lines = self.textarea.lines().to_vec();
         if lines.is_empty() {
@@ -430,6 +435,77 @@ impl App {
         textarea.move_cursor(CursorMove::End);
         self.textarea = textarea;
         self.view_offset = (0, 0);
+    }
+
+    fn gather_suggestions(&self) -> Option<SuggestionInfo> {
+        if let Some(prefix) = self.current_command_prefix() {
+            let matches = Self::command_matches(&prefix)
+                .into_iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>();
+            if !matches.is_empty() {
+                return Some(SuggestionInfo {
+                    prefix,
+                    matches,
+                    kind: SuggestionKind::Command,
+                });
+            }
+        }
+
+        if let Some(prefix) = self.current_file_prefix() {
+            let matches = self.file_matches(&prefix);
+            if !matches.is_empty() {
+                return Some(SuggestionInfo {
+                    prefix,
+                    matches,
+                    kind: SuggestionKind::File,
+                });
+            }
+        }
+
+        None
+    }
+
+    fn current_file_prefix(&self) -> Option<String> {
+        let lines = self.textarea.lines();
+        let raw = lines.last()?;
+        let trimmed = raw.trim_end();
+        if !trimmed.starts_with('@') {
+            return None;
+        }
+        if trimmed.len() > 1 && trimmed[1..].chars().any(char::is_whitespace) {
+            return None;
+        }
+        Some(trimmed.to_string())
+    }
+
+    fn file_matches(&self, prefix: &str) -> Vec<String> {
+        let search = prefix.trim_start_matches('@');
+        let mut results = Vec::new();
+
+        for entry in WalkDir::new(&self.repo_root)
+            .max_depth(4)
+            .into_iter()
+            .filter_map(Result::ok)
+        {
+            let path = entry.path();
+            if entry.file_type().is_dir() {
+                continue;
+            }
+            let rel = match path.strip_prefix(&self.repo_root) {
+                Ok(rel) => rel,
+                Err(_) => continue,
+            };
+            let rel_str = rel.to_string_lossy().replace('\\', "/");
+            if rel_str.starts_with(search) {
+                results.push(format!("@{}", rel_str));
+            }
+            if results.len() >= 12 {
+                break;
+            }
+        }
+
+        results
     }
 
     fn draw_banner(&self, frame: &mut Frame, area: Rect) {
@@ -759,6 +835,17 @@ enum MessageKind {
     Info,
     Warn,
     Error,
+}
+
+struct SuggestionInfo {
+    prefix: String,
+    matches: Vec<String>,
+    kind: SuggestionKind,
+}
+
+enum SuggestionKind {
+    Command,
+    File,
 }
 
 pub(super) enum AsyncEvent {
