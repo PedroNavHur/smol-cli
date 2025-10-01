@@ -13,17 +13,21 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 use tokio::{spawn, sync::mpsc::UnboundedSender};
-use tui_textarea::{Input, TextArea};
+use tui_textarea::{CursorMove, Input, TextArea};
 
 use crate::{config, diff, edits, fsutil, llm};
 
 use super::theme::{
     ACTIVITY_BORDER, BANNER_BORDER, BANNER_CAT_EAR, BANNER_CAT_EYE, BANNER_CAT_MOUTH,
-    BANNER_CAT_WHISKER, BANNER_TEXT, PROMPT_BORDER, PROMPT_TEXT, UI_BORDER_TYPE,
+    BANNER_CAT_WHISKER, BANNER_TEXT, PROMPT_BORDER, PROMPT_TEXT, STATUS_TEXT, UI_BORDER_TYPE,
 };
 
 const WELCOME_MSG: &str =
     "Smol CLI — TUI chat. Enter prompts below. y/apply, n/skip during review.";
+
+const COMMANDS: &[&str] = &[
+    "/help", "/login", "/model", "/clear", "/stats", "/undo", "/quit", "/exit",
+];
 
 pub(super) struct App {
     cfg: config::AppConfig,
@@ -84,8 +88,9 @@ impl App {
             .constraints(
                 [
                     Constraint::Length(5),
-                    Constraint::Percentage(70),
-                    Constraint::Percentage(30),
+                    Constraint::Percentage(65),
+                    Constraint::Percentage(28),
+                    Constraint::Length(2),
                 ]
                 .as_ref(),
             )
@@ -111,6 +116,7 @@ impl App {
         }
 
         self.draw_prompt(frame, layout[2]);
+        self.draw_status(frame, layout[3]);
     }
 
     pub(super) async fn on_key(&mut self, key: KeyEvent) -> Result<()> {
@@ -118,6 +124,12 @@ impl App {
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.should_quit = true;
             return Ok(());
+        }
+
+        if key.code == KeyCode::Tab && key.modifiers.is_empty() {
+            if self.try_autocomplete_command() {
+                return Ok(());
+            }
         }
 
         if self.review.is_some() {
@@ -262,10 +274,26 @@ impl App {
             return;
         }
 
+        let prefix = self.current_command_prefix();
+        let suggestions = prefix
+            .as_ref()
+            .map(|p| Self::command_matches(p))
+            .unwrap_or_default();
+
+        let (input_area, suggestion_area) = if !suggestions.is_empty() && inner.height >= 2 {
+            let splits = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(1), Constraint::Length(1)].as_ref())
+                .split(inner);
+            (splits[0], Some(splits[1]))
+        } else {
+            (inner, None)
+        };
+
         let sections = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(2), Constraint::Min(1)])
-            .split(inner);
+            .constraints([Constraint::Length(3), Constraint::Min(1)])
+            .split(input_area);
 
         let caret_char = if self.awaiting_response {
             '.'
@@ -281,39 +309,127 @@ impl App {
         );
         frame.render_widget(self.textarea.widget(), sections[1]);
 
-        if self.review.is_none() && self.caret_visible {
+        if let Some(area) = suggestion_area {
+            let text = format!("Commands: {}", suggestions.join("   "));
+            if !text.is_empty() {
+                let suggestion_para = Paragraph::new(text)
+                    .style(Style::default().fg(PROMPT_TEXT))
+                    .wrap(Wrap { trim: true });
+                frame.render_widget(suggestion_para, area);
+            }
+        }
+
+        if self.review.is_none() {
             let cursor = self.textarea.cursor();
             let height = sections[1].height;
             let width = sections[1].width;
-            if height == 0 || width == 0 {
-                return;
+            if height != 0 && width != 0 {
+                let (prev_row, prev_col) = self.view_offset;
+                let adjust = |prev: u16, cursor: usize, len: u16| -> u16 {
+                    if len == 0 {
+                        return prev;
+                    }
+                    let cursor = cursor as u16;
+                    if cursor < prev {
+                        cursor
+                    } else if prev + len <= cursor {
+                        cursor + 1 - len
+                    } else {
+                        prev
+                    }
+                };
+
+                let top_row = adjust(prev_row, cursor.0, height);
+                let top_col = adjust(prev_col, cursor.1, width);
+                self.view_offset = (top_row, top_col);
+
+                let visible_row = cursor.0.saturating_sub(top_row as usize) as u16;
+                let visible_col = cursor.1.saturating_sub(top_col as usize) as u16;
+                let hint = prefix
+                    .as_ref()
+                    .and_then(|p| suggestions.first().and_then(|s| s.strip_prefix(p.as_str())));
+                if let Some(rem) = hint {
+                    if !rem.is_empty() {
+                        let x =
+                            sections[1].x + visible_col.min(sections[1].width.saturating_sub(1));
+                        let y =
+                            sections[1].y + visible_row.min(sections[1].height.saturating_sub(1));
+                        let max_width =
+                            sections[1].width.saturating_sub(visible_col).max(0) as usize;
+                        if max_width > 0 {
+                            frame.buffer_mut().set_stringn(
+                                x,
+                                y,
+                                rem,
+                                max_width,
+                                Style::default().fg(PROMPT_TEXT).add_modifier(Modifier::DIM),
+                            );
+                        }
+                    }
+                }
+
+                if self.caret_visible {
+                    let x = sections[1].x + visible_col.min(sections[1].width.saturating_sub(1));
+                    let y = sections[1].y + visible_row.min(sections[1].height.saturating_sub(1));
+                    frame.set_cursor_position(Position::new(x, y));
+                }
             }
-
-            let (prev_row, prev_col) = self.view_offset;
-            let adjust = |prev: u16, cursor: usize, len: u16| -> u16 {
-                if len == 0 {
-                    return prev;
-                }
-                let cursor = cursor as u16;
-                if cursor < prev {
-                    cursor
-                } else if prev + len <= cursor {
-                    cursor + 1 - len
-                } else {
-                    prev
-                }
-            };
-
-            let top_row = adjust(prev_row, cursor.0, height);
-            let top_col = adjust(prev_col, cursor.1, width);
-            self.view_offset = (top_row, top_col);
-
-            let visible_row = cursor.0.saturating_sub(top_row as usize) as u16;
-            let visible_col = cursor.1.saturating_sub(top_col as usize) as u16;
-            let x = sections[1].x + visible_col.min(sections[1].width.saturating_sub(1));
-            let y = sections[1].y + visible_row.min(sections[1].height.saturating_sub(1));
-            frame.set_cursor_position(Position::new(x, y));
         }
+    }
+
+    fn try_autocomplete_command(&mut self) -> bool {
+        let prefix = match self.current_command_prefix() {
+            Some(p) => p,
+            None => return false,
+        };
+
+        let suggestions = Self::command_matches(&prefix);
+        let suggestion = match suggestions.first() {
+            Some(s) => *s,
+            None => return false,
+        };
+
+        let mut lines = self.textarea.lines().to_vec();
+        if lines.is_empty() {
+            lines.push(format!("{} ", suggestion));
+        } else if let Some(last) = lines.last_mut() {
+            *last = format!("{} ", suggestion);
+        }
+
+        self.set_textarea_lines(lines);
+        self.caret_visible = true;
+        true
+    }
+
+    fn current_command_prefix(&self) -> Option<String> {
+        let lines = self.textarea.lines();
+        let raw = lines.last()?;
+        let trimmed = raw.trim_end();
+        if !trimmed.starts_with('/') {
+            return None;
+        }
+        if trimmed.len() > 1 && trimmed[1..].chars().any(char::is_whitespace) {
+            return None;
+        }
+        Some(trimmed.to_string())
+    }
+
+    fn command_matches(prefix: &str) -> Vec<&'static str> {
+        COMMANDS
+            .iter()
+            .copied()
+            .filter(|cmd| cmd.starts_with(prefix))
+            .collect()
+    }
+
+    fn set_textarea_lines(&mut self, lines: Vec<String>) {
+        let mut textarea = TextArea::from(lines);
+        textarea.set_placeholder_text("Describe the change you want");
+        textarea.set_style(Style::default().fg(PROMPT_TEXT));
+        textarea.move_cursor(CursorMove::Bottom);
+        textarea.move_cursor(CursorMove::End);
+        self.textarea = textarea;
+        self.view_offset = (0, 0);
     }
 
     fn draw_banner(&self, frame: &mut Frame, area: Rect) {
@@ -347,6 +463,29 @@ impl App {
         let lines = vec![cat_line];
         let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
         frame.render_widget(paragraph, inner);
+    }
+
+    fn draw_status(&self, frame: &mut Frame, area: Rect) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+
+        let icon_style = Style::default().fg(STATUS_TEXT);
+        let spans = vec![
+            Span::styled("⏎", icon_style),
+            Span::raw(" send   "),
+            Span::styled("⇧⏎", icon_style),
+            Span::raw(" newline   "),
+            Span::styled("⌃C", icon_style),
+            Span::raw(" quit   "),
+            Span::raw("538K tokens used   "),
+            Span::raw("66% context left"),
+        ];
+        let line = Line::from(spans);
+        let paragraph = Paragraph::new(line)
+            .alignment(Alignment::Left)
+            .style(Style::default().fg(STATUS_TEXT));
+        frame.render_widget(paragraph, area);
     }
 
     fn render_history(&self) -> Vec<Line<'static>> {

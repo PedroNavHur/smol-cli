@@ -20,4 +20,6 @@ pub const BANNER_CAT_EYE: Color = VANILLA;
 pub const BANNER_CAT_MOUTH: Color = FIRE_BRICK;
 pub const BANNER_CAT_WHISKER: Color = FIRE_BRICK;
 
+pub const STATUS_TEXT: Color = VANILLA;
+
 pub const UI_BORDER_TYPE: BorderType = BorderType::Thick;
