@@ -5,25 +5,16 @@ use std::{
 };
 
 use anyhow::Result;
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-use ratatui::{
-    Frame,
-    prelude::*,
-    text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
-};
-use tokio::{spawn, sync::mpsc::UnboundedSender};
-use tui_textarea::{Input, TextArea};
+use crossterm::event::KeyEvent;
+use ratatui::{Frame, style::Style};
+use tokio::sync::mpsc::UnboundedSender;
+use tui_textarea::TextArea;
 
-use crate::{config, diff, edits, fsutil, llm};
+use super::review::{PreparedEdit, ReviewState};
+use crate::ui::theme::PROMPT_TEXT;
+use crate::{config, diff, edits, fsutil};
 
-use super::prompt;
-use crate::ui::theme::{
-    ACTIVITY_BORDER, BANNER_BORDER, BANNER_CAT_EAR, BANNER_CAT_EYE, BANNER_CAT_MOUTH,
-    BANNER_CAT_WHISKER, BANNER_TEXT, PROMPT_TEXT, STATUS_TEXT, UI_BORDER_TYPE,
-};
-
-const WELCOME_MSG: &str =
+pub(super) const WELCOME_MSG: &str =
     "Smol CLI — TUI chat. Enter prompts below. y/apply, n/skip during review.";
 
 pub(super) const COMMANDS: &[&str] = &[
@@ -35,13 +26,13 @@ pub struct App {
     pub(super) repo_root: PathBuf,
     pub(super) tx: UnboundedSender<AsyncEvent>,
     pub(super) textarea: TextArea<'static>,
-    messages: Vec<Message>,
+    pub(super) messages: Vec<Message>,
     pub(super) view_offset: (u16, u16),
-    history: Vec<String>,
+    pub(super) history: Vec<String>,
     pub(super) awaiting_response: bool,
     pub(super) review: Option<ReviewState>,
-    last_backups: Vec<PathBuf>,
-    should_quit: bool,
+    pub(super) last_backups: Vec<PathBuf>,
+    pub(super) should_quit: bool,
     pub(super) caret_visible: bool,
 }
 
@@ -84,95 +75,15 @@ impl App {
     }
 
     pub(crate) fn draw(&mut self, frame: &mut Frame) {
-        let layout = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints(
-                [
-                    Constraint::Length(5),
-                    Constraint::Percentage(65),
-                    Constraint::Percentage(28),
-                    Constraint::Length(2),
-                ]
-                .as_ref(),
-            )
-            .split(frame.area());
-
-        self.draw_banner(frame, layout[0]);
-
-        let history = self.render_history();
-        let history_block = Paragraph::new(history)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(UI_BORDER_TYPE)
-                    .border_style(Style::default().fg(ACTIVITY_BORDER))
-                    .title("Activity"),
-            )
-            .wrap(Wrap { trim: false });
-        frame.render_widget(history_block, layout[1]);
-
-        if let Some(review) = &self.review {
-            let review_block = self.render_review(review);
-            frame.render_widget(review_block, layout[1]);
-        }
-
-        prompt::draw_prompt(self, frame, layout[2]);
-        self.draw_status(frame, layout[3]);
+        super::draw::draw(self, frame);
     }
 
     pub(crate) async fn on_key(&mut self, key: KeyEvent) -> Result<()> {
-        self.caret_visible = true;
-        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            self.should_quit = true;
-            return Ok(());
-        }
-
-        if key.code == KeyCode::Tab && key.modifiers.is_empty() {
-            if prompt::try_accept_suggestion(self) {
-                return Ok(());
-            }
-        }
-
-        if self.review.is_some() {
-            match key.code {
-                KeyCode::Char('y') => {
-                    if let Err(err) = self.apply_current() {
-                        self.add_message(MessageKind::Error, format!("Apply failed: {err}"));
-                    }
-                }
-                KeyCode::Char('n') => {
-                    self.skip_current("Skipped by user");
-                }
-                KeyCode::Char('b') => {
-                    self.review = None;
-                    self.add_message(MessageKind::Info, "Exited review.".into());
-                    self.caret_visible = true;
-                }
-                _ => {}
-            }
-            return Ok(());
-        }
-
-        if key.code == KeyCode::Char('z') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            self.undo_last();
-            return Ok(());
-        }
-
-        if key.code == KeyCode::Enter && key.modifiers.is_empty() {
-            self.submit_prompt().await?;
-            return Ok(());
-        }
-
-        let input = Input::from(Event::Key(key));
-        self.textarea.input(input);
-        Ok(())
+        super::input::on_key(self, key).await
     }
 
     pub(crate) fn on_paste(&mut self, data: String) {
-        if self.review.is_none() {
-            self.textarea.insert_str(&data);
-            self.caret_visible = true;
-        }
+        super::input::on_paste(self, data);
     }
 
     pub(crate) fn handle_async(&mut self, event: AsyncEvent) {
@@ -208,214 +119,24 @@ impl App {
         self.should_quit
     }
 
-    fn add_message(&mut self, kind: MessageKind, content: String) {
+    pub(super) fn add_message(&mut self, kind: MessageKind, content: String) {
         self.messages.push(Message { kind, content });
         if self.messages.len() > 200 {
             self.messages.drain(0..self.messages.len() - 200);
         }
     }
 
-    fn handle_command(&mut self, input: &str) -> Result<()> {
-        self.caret_visible = true;
-        match input {
-            "/help" => self.add_message(
-                MessageKind::Info,
-                "/login  /model  /clear  /undo  /stats  /quit".into(),
-            ),
-            "/quit" | "/exit" => {
-                self.should_quit = true;
-            }
-            "/clear" => {
-                self.messages.clear();
-                self.history.clear();
-                self.add_message(MessageKind::Info, "History cleared.".into());
-                self.add_message(MessageKind::Info, WELCOME_MSG.into());
-            }
-            "/stats" => {
-                self.add_message(
-                    MessageKind::Info,
-                    format!("Messages: {}", self.history.len()),
-                );
-            }
-            "/undo" => self.undo_last(),
-            "/login" => self.add_message(
-                MessageKind::Warn,
-                "Temporarily unsupported here. Run `/login` in classic chat mode.".into(),
-            ),
-            cmd if cmd.starts_with("/model") => {
-                let parts: Vec<_> = cmd.split_whitespace().collect();
-                if parts.len() == 2 {
-                    self.cfg.provider.model = parts[1].to_string();
-                    config::save(&self.cfg)?;
-                    self.add_message(
-                        MessageKind::Info,
-                        format!("Model set to {}", self.cfg.provider.model),
-                    );
-                } else {
-                    self.add_message(
-                        MessageKind::Warn,
-                        "Usage: /model <provider/model>, e.g., openai/gpt-4o-mini".into(),
-                    );
-                }
-            }
-            _ => self.add_message(MessageKind::Warn, "Unknown command. /help".into()),
-        }
-        Ok(())
-    }
-
-    fn draw_banner(&self, frame: &mut Frame, area: Rect) {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(UI_BORDER_TYPE)
-            .border_style(Style::default().fg(BANNER_BORDER))
-            .title("Smol CLI");
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-        if inner.height == 0 || inner.width == 0 {
-            return;
-        }
-
-        let cat_line = Line::from(vec![
-            Span::styled("  (", Style::default().fg(BANNER_TEXT)),
-            Span::styled("=", Style::default().fg(BANNER_CAT_WHISKER)),
-            Span::styled("^", Style::default().fg(BANNER_CAT_EAR)),
-            Span::styled("･", Style::default().fg(BANNER_CAT_EYE)),
-            Span::styled("ω", Style::default().fg(BANNER_CAT_MOUTH)),
-            Span::styled("･", Style::default().fg(BANNER_CAT_EYE)),
-            Span::styled("^", Style::default().fg(BANNER_CAT_EAR)),
-            Span::styled("=", Style::default().fg(BANNER_CAT_WHISKER)),
-            Span::styled(")", Style::default().fg(BANNER_TEXT)),
-            Span::raw("  "),
-            Span::styled(
-                "Smol - a minimal coding agent",
-                Style::default().fg(BANNER_TEXT),
-            ),
-        ]);
-        let lines = vec![cat_line];
-        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
-        frame.render_widget(paragraph, inner);
-    }
-
-    fn draw_status(&self, frame: &mut Frame, area: Rect) {
-        if area.width == 0 || area.height == 0 {
-            return;
-        }
-
-        let icon_style = Style::default().fg(STATUS_TEXT);
-        let spans = vec![
-            Span::styled("⏎", icon_style),
-            Span::raw(" send   "),
-            Span::styled("⇧⏎", icon_style),
-            Span::raw(" newline   "),
-            Span::styled("⌃C", icon_style),
-            Span::raw(" quit   "),
-            Span::raw("538K tokens used   "),
-            Span::raw("66% context left"),
-        ];
-        let line = Line::from(spans);
-        let paragraph = Paragraph::new(line)
-            .alignment(Alignment::Left)
-            .style(Style::default().fg(STATUS_TEXT));
-        frame.render_widget(paragraph, area);
-    }
-
-    fn render_history(&self) -> Vec<Line<'static>> {
-        self.messages
-            .iter()
-            .map(|m| {
-                let style = match m.kind {
-                    MessageKind::User => Style::default().fg(Color::Cyan),
-                    MessageKind::Warn => Style::default().fg(Color::Yellow),
-                    MessageKind::Error => Style::default().fg(Color::Red),
-                    MessageKind::Info => Style::default().fg(Color::Gray),
-                };
-                Line::from(Span::styled(m.content.clone(), style))
-            })
-            .collect()
-    }
-
-    fn render_review(&self, review: &ReviewState) -> Paragraph<'static> {
-        let mut lines = Vec::new();
-        if let Some(current) = review.current_edit() {
-            lines.push(Line::raw(format!(
-                "Reviewing {} ({} of {})",
-                current.path,
-                review.index + 1,
-                review.edits.len()
-            )));
-            if let Some(r) = &current.rationale {
-                lines.push(Line::raw(format!("Reason: {r}")));
-            }
-            lines.push(Line::raw("Press y=apply, n=skip, b=cancel review"));
-            lines.push(Line::raw("────────────────────────────────"));
-            lines.extend(current.diff.lines().map(|l| Line::raw(l.to_string())));
-        }
-        Paragraph::new(lines)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(UI_BORDER_TYPE)
-                    .title("Proposed edit"),
-            )
-            .wrap(Wrap { trim: false })
-    }
-
-    fn reset_input(&mut self) {
+    pub(super) fn reset_input(&mut self) {
         self.textarea = build_textarea();
         self.view_offset = (0, 0);
         self.caret_visible = true;
     }
 
-    async fn submit_prompt(&mut self) -> Result<()> {
-        if self.awaiting_response {
-            self.add_message(
-                MessageKind::Warn,
-                "Still waiting for the last response...".into(),
-            );
-            return Ok(());
-        }
-
-        let prompt = self.textarea.lines().join("\n");
-        let trimmed = prompt.trim();
-        if trimmed.is_empty() {
-            return Ok(());
-        }
-
-        if trimmed.starts_with('/') {
-            self.reset_input();
-            self.handle_command(trimmed)?;
-            return Ok(());
-        }
-
-        if self.cfg.auth.api_key.is_empty() {
-            self.add_message(
-                MessageKind::Error,
-                "Missing OpenRouter API key. Set OPENROUTER_API_KEY or use plain mode /login."
-                    .into(),
-            );
-            self.reset_input();
-            return Ok(());
-        }
-
-        self.add_message(MessageKind::User, trimmed.to_string());
-        self.history.push(trimmed.to_string());
-        self.reset_input();
-        self.awaiting_response = true;
-        self.caret_visible = true;
-
-        let cfg = self.cfg.clone();
-        let tx = self.tx.clone();
-        let prompt = trimmed.to_string();
-
-        spawn(async move {
-            let event = async_handle_prompt(cfg, prompt).await;
-            let _ = tx.send(event);
-        });
-
-        Ok(())
+    pub(super) async fn submit_prompt(&mut self) -> Result<()> {
+        super::actions::submit_prompt(self).await
     }
 
-    fn begin_review(&mut self, batch: edits::EditBatch) -> Result<()> {
+    pub(super) fn begin_review(&mut self, batch: edits::EditBatch) -> Result<()> {
         let mut edits = Vec::new();
         let backup_root = timestamp_dir()?;
 
@@ -496,96 +217,27 @@ impl App {
         Ok(())
     }
 
-    fn apply_current(&mut self) -> Result<()> {
-        let (edit, backup_root) = match self
-            .review
-            .as_ref()
-            .and_then(|r| r.current_edit().map(|e| (e.clone(), r.backup_root.clone())))
-        {
-            Some(tuple) => tuple,
-            None => return Ok(()),
-        };
-
-        let backup_file = fsutil::backup_path(&backup_root, &edit.abs_path, &self.repo_root)?;
-        fsutil::backup_and_write(&edit.abs_path, &edit.new_contents, &backup_file)?;
-        self.add_message(
-            MessageKind::Info,
-            format!("Applied {} (backup: {})", edit.path, backup_file.display()),
-        );
-        self.last_backups.push(backup_file);
-        self.advance_review();
-        Ok(())
+    pub(super) fn apply_current(&mut self) -> Result<()> {
+        super::review::apply_current(self)
     }
 
-    fn skip_current(&mut self, reason: &str) {
-        if let Some(review) = &self.review {
-            if let Some(current) = review.current_edit() {
-                self.add_message(MessageKind::Info, format!("{}: {}", reason, current.path));
-            }
-        }
-        self.advance_review();
+    pub(super) fn skip_current(&mut self, reason: &str) {
+        super::review::skip_current(self, reason);
     }
 
-    fn advance_review(&mut self) {
-        if let Some(review) = &mut self.review {
-            review.index += 1;
-            if review.index >= review.edits.len() {
-                self.review = None;
-                self.add_message(MessageKind::Info, "Review complete.".into());
-                self.caret_visible = true;
-            }
-        }
-    }
-
-    fn undo_last(&mut self) {
-        if let Some(backup) = self.last_backups.pop() {
-            match target_from_backup(&self.repo_root, &backup) {
-                Some(target) => match fs::copy(&backup, &target) {
-                    Ok(_) => self
-                        .add_message(MessageKind::Info, format!("Reverted {}", target.display())),
-                    Err(err) => self.add_message(MessageKind::Error, format!("Undo failed: {err}")),
-                },
-                None => self.add_message(
-                    MessageKind::Warn,
-                    format!("Could not determine target for {}", backup.display()),
-                ),
-            }
-        } else {
-            self.add_message(MessageKind::Info, "Nothing to undo.".into());
-        }
-        self.caret_visible = true;
+    pub(super) fn undo_last(&mut self) {
+        super::review::undo_last(self);
     }
 }
 
 #[derive(Clone)]
-struct PreparedEdit {
-    path: String,
-    abs_path: PathBuf,
-    diff: String,
-    rationale: Option<String>,
-    new_contents: String,
-}
-
-pub(super) struct ReviewState {
-    edits: Vec<PreparedEdit>,
-    index: usize,
-    backup_root: PathBuf,
-}
-
-impl ReviewState {
-    fn current_edit(&self) -> Option<&PreparedEdit> {
-        self.edits.get(self.index)
-    }
+pub(super) struct Message {
+    pub(super) kind: MessageKind,
+    pub(super) content: String,
 }
 
 #[derive(Clone)]
-struct Message {
-    kind: MessageKind,
-    content: String,
-}
-
-#[derive(Clone)]
-enum MessageKind {
+pub(super) enum MessageKind {
     User,
     Info,
     Warn,
@@ -616,21 +268,7 @@ pub enum AsyncEvent {
     Edits { batch: edits::EditBatch },
 }
 
-async fn async_handle_prompt(cfg: config::AppConfig, prompt: String) -> AsyncEvent {
-    let context = build_context().unwrap_or_else(|_| String::new());
-    match llm::propose_edits(&cfg, &prompt, &context).await {
-        Ok(raw) => match edits::parse_edits(&raw) {
-            Ok(batch) => AsyncEvent::Edits { batch },
-            Err(err) => AsyncEvent::ParseError {
-                error: err.to_string(),
-                raw,
-            },
-        },
-        Err(err) => AsyncEvent::Error(err.to_string()),
-    }
-}
-
-fn build_context() -> Result<String> {
+pub(super) fn build_context() -> Result<String> {
     let mut ctx = String::new();
     if let Ok(readme) = fs::read_to_string("README.md") {
         ctx.push_str("README.md:\n");
@@ -670,7 +308,7 @@ fn is_write_blocked(path: &str) -> bool {
     path.starts_with('/') || path.starts_with('.')
 }
 
-fn target_from_backup(repo_root: &Path, backup: &Path) -> Option<PathBuf> {
+pub(super) fn target_from_backup(repo_root: &Path, backup: &Path) -> Option<PathBuf> {
     let smol = fsutil::smol_dir().ok()?;
     let backups = smol.join("backups");
     let rel = backup.strip_prefix(&backups).ok()?;
