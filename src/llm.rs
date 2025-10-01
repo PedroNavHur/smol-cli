@@ -1,7 +1,7 @@
+use crate::config::AppConfig;
 use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use crate::config::AppConfig;
 
 #[derive(Serialize)]
 struct Message<'a> {
@@ -44,15 +44,27 @@ pub async fn propose_edits(cfg: &AppConfig, user_prompt: &str, context: &str) ->
     let body = ChatRequest {
         model: &cfg.provider.model,
         messages: vec![
-            Message { role: "system", content: SYSTEM_PROMPT },
-            Message { role: "user", content: context },
-            Message { role: "user", content: user_prompt },
+            Message {
+                role: "system",
+                content: SYSTEM_PROMPT,
+            },
+            Message {
+                role: "user",
+                content: context,
+            },
+            Message {
+                role: "user",
+                content: user_prompt,
+            },
         ],
         temperature: Some(cfg.runtime.temperature),
     };
 
     let client = Client::new();
-    let url = format!("{}/chat/completions", cfg.provider.base_url.trim_end_matches('/'));
+    let url = format!(
+        "{}/chat/completions",
+        cfg.provider.base_url.trim_end_matches('/')
+    );
     let resp: ChatResponse = client
         .post(url)
         .bearer_auth(&cfg.auth.api_key)
@@ -66,7 +78,9 @@ pub async fn propose_edits(cfg: &AppConfig, user_prompt: &str, context: &str) ->
         .await
         .context("llm decode failed")?;
 
-    let content = resp.choices.first()
+    let content = resp
+        .choices
+        .first()
         .map(|c| c.message.content.clone())
         .unwrap_or_default();
 

@@ -1,15 +1,14 @@
 use crate::{config, diff as diffmod, edits, fsutil, llm};
 use anyhow::{Context, Result};
-use inquire::{Confirm, Password, Text};
+use inquire::{Confirm, Password};
 use regex::Regex;
-use serde_json::json;
 use std::{
     fs,
     io::{self, Write},
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
-use tracing::{debug, info};
+use tracing::debug;
 
 pub async fn run(model_override: Option<String>) -> Result<()> {
     let mut cfg = config::load()?;

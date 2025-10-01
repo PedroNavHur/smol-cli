@@ -9,6 +9,7 @@ mod diff;
 mod edits;
 mod fsutil;
 mod llm;
+mod tui;
 
 #[derive(Parser)]
 #[command(
@@ -32,6 +33,10 @@ enum Commands {
         /// Model override, e.g. openai/gpt-4o-mini
         #[arg(long)]
         model: Option<String>,
+
+        /// Launch the experimental terminal UI
+        #[arg(long)]
+        tui: bool,
     },
 }
 
@@ -51,7 +56,16 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     match cli.cmd {
-        Commands::Chat { model } => chat::run(model).await?,
+        Commands::Chat {
+            model,
+            tui: use_tui,
+        } => {
+            if use_tui {
+                tui::run(model).await?;
+            } else {
+                chat::run(model).await?;
+            }
+        }
     }
 
     Ok(())
