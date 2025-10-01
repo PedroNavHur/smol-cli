@@ -81,7 +81,10 @@ pub async fn propose_edits(cfg: &AppConfig, user_prompt: &str, context: &str) ->
     let content = resp
         .choices
         .first()
-        .map(|c| c.message.content.clone())
+        .map(|c| {
+            debug_assert_eq!(&c.message.role, "assistant");
+            c.message.content.clone()
+        })
         .unwrap_or_default();
 
     Ok(content)
