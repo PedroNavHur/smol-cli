@@ -85,15 +85,15 @@ pub async fn run(model_override: Option<String>) -> Result<()> {
             // Build a tiny context (v0): current README if exists
             let ctx = build_context()?;
             let resp = llm::propose_edits(&cfg, input, &ctx).await?;
-            debug!("LLM raw: {resp}");
+            debug!("LLM raw: {}", resp.content);
 
-            match edits::parse_edits(&resp) {
+            match edits::parse_edits(&resp.content) {
                 Ok(batch) => {
                     apply_with_review(batch, &mut last_backups)?;
                 }
                 Err(e) => {
                     println!("Model did not return valid edits JSON: {e}");
-                    println!("Raw response:\n{resp}");
+                    println!("Raw response:\n{}", resp.content);
                 }
             }
 

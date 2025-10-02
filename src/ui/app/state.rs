@@ -35,6 +35,7 @@ pub struct App {
     pub(super) caret_visible: bool,
     pub(super) models: Option<Vec<llm::Model>>,
     pub(super) model_picker: Option<ModelPickerState>,
+    pub(super) last_usage: Option<llm::Usage>,
 }
 
 impl App {
@@ -58,6 +59,7 @@ impl App {
             caret_visible: true,
             models: None,
             model_picker: None,
+            last_usage: None,
         };
 
         if app.cfg.auth.api_key.is_empty() {
@@ -95,13 +97,14 @@ impl App {
         match event {
             AsyncEvent::Error(err) => self.add_message(MessageKind::Error, err),
             AsyncEvent::ParseError { error, raw } => {
+                self.last_usage = None;
                 self.add_message(
                     MessageKind::Error,
                     format!("Model did not return valid edits: {error}"),
                 );
                 self.add_message(MessageKind::Info, format!("Raw response: {raw}"));
             }
-            AsyncEvent::Edits { batch } => {
+            AsyncEvent::Edits { batch, usage } => {
                 if batch.edits.is_empty() {
                     self.add_message(MessageKind::Info, "No edits proposed.".into());
                 } else if let Err(err) = self.begin_review(batch) {
@@ -110,6 +113,7 @@ impl App {
                         format!("Failed to prepare edits: {err}"),
                     );
                 }
+                self.last_usage = usage;
             }
         }
     }
@@ -272,7 +276,7 @@ pub(super) struct TokenInfo {
 pub enum AsyncEvent {
     Error(String),
     ParseError { error: String, raw: String },
-    Edits { batch: edits::EditBatch },
+    Edits { batch: edits::EditBatch, usage: Option<llm::Usage> },
 }
 
 pub(super) fn build_context() -> Result<String> {

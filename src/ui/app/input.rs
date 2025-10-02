@@ -57,7 +57,14 @@ pub(super) async fn on_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     config::save(&app.cfg)?;
                     app.add_message(
                         MessageKind::Info,
-                        format!("Model set to {} ({})", model.name, model.id),
+                        format!(
+                            "Model set to {} ({}) — in {} out {} ctx {}",
+                            model.name,
+                            model.id,
+                            display_cost(model.prompt_cost),
+                            display_cost(model.completion_cost),
+                            display_ctx(model.context_length)
+                        ),
                     );
                 }
                 app.model_picker = None;
@@ -89,6 +96,18 @@ pub(super) async fn on_key(app: &mut App, key: KeyEvent) -> Result<()> {
     let input = Input::from(Event::Key(key));
     app.textarea.input(input);
     Ok(())
+}
+
+fn display_cost(cost: Option<f64>) -> String {
+    cost
+        .map(|c| format!("${:.4}", c))
+        .unwrap_or_else(|| "--".into())
+}
+
+fn display_ctx(ctx: Option<u32>) -> String {
+    ctx
+        .map(|c| format!("{} tok", c))
+        .unwrap_or_else(|| "--".into())
 }
 
 pub(super) fn on_paste(app: &mut App, data: String) {
@@ -170,7 +189,14 @@ pub(super) async fn handle_command(app: &mut App, input: &str) -> Result<()> {
                             config::save(&app.cfg)?;
                             app.add_message(
                                 MessageKind::Info,
-                                format!("Model set to {} ({})", model.name, model.id),
+                                format!(
+                                    "Model set to {} ({}) — in {} out {} ctx {}",
+                                    model.name,
+                                    model.id,
+                                    display_cost(model.prompt_cost),
+                                    display_cost(model.completion_cost),
+                                    display_ctx(model.context_length)
+                                ),
                             );
                         } else {
                             app.add_message(MessageKind::Error, "Invalid model number".into());

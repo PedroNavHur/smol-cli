@@ -112,7 +112,7 @@ fn draw_status(app: &App, frame: &mut Frame, area: Rect) {
     }
 
     let icon_style = Style::default().fg(STATUS_TEXT);
-    let spans = vec![
+    let mut spans = vec![
         Span::styled("⏎", icon_style),
         Span::raw(" send   "),
         Span::styled("⇧⏎", icon_style),
@@ -122,6 +122,36 @@ fn draw_status(app: &App, frame: &mut Frame, area: Rect) {
         Span::raw("Model: "),
         Span::styled(&app.cfg.provider.model, Style::default().fg(Color::Cyan)),
     ];
+
+    if let Some(usage) = &app.last_usage {
+        spans.push(Span::raw("   Tokens: "));
+        if let Some(total) = usage.total_tokens {
+            spans.push(Span::styled(total.to_string(), Style::default().fg(Color::Yellow)));
+        } else {
+            spans.push(Span::raw("--"));
+        }
+
+        if usage.prompt_tokens.is_some() || usage.completion_tokens.is_some() {
+            spans.push(Span::raw(" (prompt "));
+            let prompt = usage
+                .prompt_tokens
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| "--".into());
+            spans.push(Span::styled(prompt, Style::default().fg(Color::Yellow)));
+            spans.push(Span::raw(", completion "));
+            let completion = usage
+                .completion_tokens
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "--".into());
+            spans.push(Span::styled(completion, Style::default().fg(Color::Yellow)));
+            spans.push(Span::raw(")"));
+        }
+
+        if let Some(cost) = usage.total_cost {
+            spans.push(Span::raw("   Cost: $"));
+            spans.push(Span::styled(format!("{cost:.4}"), Style::default().fg(Color::Green)));
+        }
+    }
     let line = Line::from(spans);
     let paragraph = Paragraph::new(line)
         .alignment(Alignment::Left)
@@ -193,8 +223,23 @@ fn render_model_picker(models: &[llm::Model], selected: usize) -> Paragraph<'sta
         } else {
             Style::default().fg(Color::Gray)
         };
+        let ctx = model
+            .context_length
+            .map(|c| format!("ctx {}", c))
+            .unwrap_or_else(|| "ctx --".into());
+        let prompt_cost = model
+            .prompt_cost
+            .map(|c| format!("${:.4}", c))
+            .unwrap_or_else(|| "--".into());
+        let completion_cost = model
+            .completion_cost
+            .map(|c| format!("${:.4}", c))
+            .unwrap_or_else(|| "--".into());
         lines.push(Line::styled(
-            format!("{prefix} {} ({})", model.name, model.id),
+            format!(
+                "{prefix} {} ({})  in {}  out {}  {}",
+                model.name, model.id, prompt_cost, completion_cost, ctx
+            ),
             style,
         ));
     }

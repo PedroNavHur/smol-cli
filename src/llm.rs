@@ -2,6 +2,7 @@ use crate::config::AppConfig;
 use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Serialize)]
 struct Message<'a> {
@@ -17,20 +18,50 @@ struct ChatRequest<'a> {
     temperature: Option<f32>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 pub struct Choice {
     pub message: AssistantMessage,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 pub struct AssistantMessage {
     pub role: String,
     pub content: String,
 }
 
+#[derive(Deserialize, Debug, Clone)]
+pub struct Usage {
+    pub prompt_tokens: Option<u32>,
+    pub completion_tokens: Option<u32>,
+    pub total_tokens: Option<u32>,
+    #[serde(default, deserialize_with = "deserialize_optional_f64")]
+    pub total_cost: Option<f64>,
+}
+
 #[derive(Deserialize, Debug)]
 struct ChatResponse {
     choices: Vec<Choice>,
+    #[serde(default)]
+    usage: Option<Usage>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EditResponse {
+    pub content: String,
+    pub usage: Option<Usage>,
+}
+
+fn deserialize_optional_f64<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+    let value = Option::<Value>::deserialize(deserializer)?;
+    Ok(match value {
+        Some(serde_json::Value::Number(num)) => num.as_f64(),
+        Some(serde_json::Value::String(s)) => s.parse().ok(),
+        _ => None,
+    })
 }
 
 const SYSTEM_PROMPT: &str = r#"You are Smol CLI, a conservative coding agent that proposes safe, minimal file edits.
@@ -40,7 +71,11 @@ Return ONLY JSON with the schema:
 - Never return shell commands.
 - Keep edits minimal and specific."#;
 
-pub async fn propose_edits(cfg: &AppConfig, user_prompt: &str, context: &str) -> Result<String> {
+pub async fn propose_edits(
+    cfg: &AppConfig,
+    user_prompt: &str,
+    context: &str,
+) -> Result<EditResponse> {
     let body = ChatRequest {
         model: &cfg.provider.model,
         messages: vec![
@@ -87,18 +122,50 @@ pub async fn propose_edits(cfg: &AppConfig, user_prompt: &str, context: &str) ->
         })
         .unwrap_or_default();
 
-    Ok(content)
+    Ok(EditResponse {
+        content,
+        usage: resp.usage,
+    })
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Debug, Clone)]
 pub struct Model {
     pub id: String,
     pub name: String,
+    pub prompt_cost: Option<f64>,
+    pub completion_cost: Option<f64>,
+    pub context_length: Option<u32>,
 }
 
 #[derive(Deserialize, Debug)]
 struct ModelsResponse {
-    data: Vec<Model>,
+    data: Vec<ApiModel>,
+}
+
+#[derive(Deserialize, Debug)]
+struct ApiModel {
+    id: String,
+    name: String,
+    #[serde(default)]
+    pricing: Option<ApiPricing>,
+    #[serde(default)]
+    context_length: Option<u32>,
+    #[serde(default)]
+    top_provider: Option<ApiTopProvider>,
+}
+
+#[derive(Deserialize, Debug)]
+struct ApiPricing {
+    #[serde(default, deserialize_with = "deserialize_optional_f64")]
+    prompt: Option<f64>,
+    #[serde(default, deserialize_with = "deserialize_optional_f64")]
+    completion: Option<f64>,
+}
+
+#[derive(Deserialize, Debug)]
+struct ApiTopProvider {
+    #[serde(default)]
+    context_length: Option<u32>,
 }
 
 pub async fn list_models(cfg: &AppConfig) -> Result<Vec<Model>> {
@@ -118,5 +185,20 @@ pub async fn list_models(cfg: &AppConfig) -> Result<Vec<Model>> {
         .json()
         .await
         .context("models decode failed")?;
-    Ok(resp.data)
+
+    let models = resp
+        .data
+        .into_iter()
+        .map(|m| Model {
+            id: m.id,
+            name: m.name,
+            prompt_cost: m.pricing.as_ref().and_then(|p| p.prompt),
+            completion_cost: m.pricing.as_ref().and_then(|p| p.completion),
+            context_length: m
+                .context_length
+                .or_else(|| m.top_provider.as_ref()?.context_length),
+        })
+        .collect();
+
+    Ok(models)
 }

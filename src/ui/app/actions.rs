@@ -56,11 +56,14 @@ pub(super) async fn submit_prompt(app: &mut App) -> Result<()> {
 async fn async_handle_prompt(cfg: config::AppConfig, prompt: String) -> AsyncEvent {
     let context = super::state::build_context().unwrap_or_else(|_| String::new());
     match llm::propose_edits(&cfg, &prompt, &context).await {
-        Ok(raw) => match edits::parse_edits(&raw) {
-            Ok(batch) => AsyncEvent::Edits { batch },
+        Ok(resp) => match edits::parse_edits(&resp.content) {
+            Ok(batch) => AsyncEvent::Edits {
+                batch,
+                usage: resp.usage,
+            },
             Err(err) => AsyncEvent::ParseError {
                 error: err.to_string(),
-                raw,
+                raw: resp.content,
             },
         },
         Err(err) => AsyncEvent::Error(err.to_string()),
