@@ -37,10 +37,7 @@ pub(super) fn draw(app: &mut App, frame: &mut Frame) {
             let picker_height = picker_height(models);
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Min(3),
-                    Constraint::Length(picker_height.max(3)),
-                ])
+                .constraints([Constraint::Min(3), Constraint::Length(picker_height.max(3))])
                 .split(layout[1]);
             (chunks[0], Some((chunks[1], picker.index)))
         } else {
@@ -126,7 +123,10 @@ fn draw_status(app: &App, frame: &mut Frame, area: Rect) {
     if let Some(usage) = &app.last_usage {
         spans.push(Span::raw("   Tokens: "));
         if let Some(total) = usage.total_tokens {
-            spans.push(Span::styled(total.to_string(), Style::default().fg(Color::Yellow)));
+            spans.push(Span::styled(
+                total.to_string(),
+                Style::default().fg(Color::Yellow),
+            ));
         } else {
             spans.push(Span::raw("--"));
         }
@@ -149,7 +149,10 @@ fn draw_status(app: &App, frame: &mut Frame, area: Rect) {
 
         if let Some(cost) = usage.total_cost {
             spans.push(Span::raw("   Cost: $"));
-            spans.push(Span::styled(format!("{cost:.4}"), Style::default().fg(Color::Green)));
+            spans.push(Span::styled(
+                format!("{cost:.4}"),
+                Style::default().fg(Color::Green),
+            ));
         }
     }
     let line = Line::from(spans);
@@ -219,21 +222,20 @@ fn render_model_picker(models: &[llm::Model], selected: usize) -> Paragraph<'sta
         let model = &models[idx];
         let prefix = if idx == selected { ">" } else { " " };
         let style = if idx == selected {
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::Gray)
         };
-        let ctx = model
-            .context_length
-            .map(|c| format!("ctx {}", c))
-            .unwrap_or_else(|| "ctx --".into());
+        let ctx = format_ctx(model.context_length.as_ref());
         let prompt_cost = model
             .prompt_cost
-            .map(|c| format!("${:.4}", c))
+            .map(|c| format!("${:.2}/M", c * 1_000_000.0))
             .unwrap_or_else(|| "--".into());
         let completion_cost = model
             .completion_cost
-            .map(|c| format!("${:.4}", c))
+            .map(|c| format!("${:.2}/M", c * 1_000_000.0))
             .unwrap_or_else(|| "--".into());
         lines.push(Line::styled(
             format!(
@@ -257,4 +259,19 @@ fn render_model_picker(models: &[llm::Model], selected: usize) -> Paragraph<'sta
 fn picker_height(models: &[llm::Model]) -> u16 {
     let len = models.len().min(8);
     (len as u16).saturating_add(2)
+}
+
+fn format_ctx(ctx: Option<&u32>) -> String {
+    match ctx {
+        Some(c) => format!("ctx {}", format_ctx_value(*c)),
+        None => "ctx --".into(),
+    }
+}
+
+fn format_ctx_value(c: u32) -> String {
+    if c % 1000 == 0 {
+        format!("{}K", c / 1000)
+    } else {
+        format!("{:.1}K", c as f32 / 1000.0)
+    }
 }

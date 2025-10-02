@@ -100,14 +100,22 @@ pub(super) async fn on_key(app: &mut App, key: KeyEvent) -> Result<()> {
 
 fn display_cost(cost: Option<f64>) -> String {
     cost
-        .map(|c| format!("${:.4}", c))
+        .map(|c| format!("${:.2}/M", c * 1_000_000.0))
         .unwrap_or_else(|| "--".into())
 }
 
 fn display_ctx(ctx: Option<u32>) -> String {
     ctx
-        .map(|c| format!("{} tok", c))
+        .map(format_ctx_value)
         .unwrap_or_else(|| "--".into())
+}
+
+fn format_ctx_value(c: u32) -> String {
+    if c % 1000 == 0 {
+        format!("{}K", c / 1000)
+    } else {
+        format!("{:.1}K", c as f32 / 1000.0)
+    }
 }
 
 pub(super) fn on_paste(app: &mut App, data: String) {
