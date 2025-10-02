@@ -70,7 +70,7 @@ pub(super) fn draw(app: &mut App, frame: &mut Frame) {
     }
 
     prompt::draw_prompt(app, frame, layout[2]);
-    draw_status(frame, layout[3]);
+    draw_status(app, frame, layout[3]);
 }
 
 fn draw_banner(frame: &mut Frame, area: Rect) {
@@ -106,7 +106,7 @@ fn draw_banner(frame: &mut Frame, area: Rect) {
     frame.render_widget(paragraph, inner);
 }
 
-fn draw_status(frame: &mut Frame, area: Rect) {
+fn draw_status(app: &App, frame: &mut Frame, area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -119,8 +119,8 @@ fn draw_status(frame: &mut Frame, area: Rect) {
         Span::raw(" newline   "),
         Span::styled("⌃C", icon_style),
         Span::raw(" quit   "),
-        Span::raw("538K tokens used   "),
-        Span::raw("66% context left"),
+        Span::raw("Model: "),
+        Span::styled(&app.cfg.provider.model, Style::default().fg(Color::Cyan)),
     ];
     let line = Line::from(spans);
     let paragraph = Paragraph::new(line)
