@@ -29,7 +29,7 @@ impl ReviewState {
 }
 
 pub(super) fn apply_current(app: &mut App) -> Result<()> {
-    let (edit, backup_root) = match app
+    let (edit, backup_root): (PreparedEdit, PathBuf) = match app
         .review
         .as_ref()
         .and_then(|r| r.current_edit().map(|e| (e.clone(), r.backup_root.clone())))

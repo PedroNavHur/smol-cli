@@ -2,7 +2,7 @@ use anyhow::Result;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use tui_textarea::Input;
 
-use crate::{config, ui::app::prompt};
+use crate::{config, llm, ui::app::prompt};
 
 use super::state::{App, MessageKind, WELCOME_MSG};
 
@@ -61,7 +61,7 @@ pub(super) fn on_paste(app: &mut App, data: String) {
     }
 }
 
-pub(super) fn handle_command(app: &mut App, input: &str) -> Result<()> {
+pub(super) async fn handle_command(app: &mut App, input: &str) -> Result<()> {
     app.caret_visible = true;
     match input {
         "/help" => app.add_message(
@@ -90,17 +90,62 @@ pub(super) fn handle_command(app: &mut App, input: &str) -> Result<()> {
         ),
         cmd if cmd.starts_with("/model") => {
             let parts: Vec<_> = cmd.split_whitespace().collect();
-            if parts.len() == 2 {
-                app.cfg.provider.model = parts[1].to_string();
-                config::save(&app.cfg)?;
-                app.add_message(
-                    MessageKind::Info,
-                    format!("Model set to {}", app.cfg.provider.model),
-                );
+            if parts.len() == 1 {
+                app.add_message(MessageKind::Info, "Fetching models...".into());
+                match llm::list_models(&app.cfg).await {
+                    Ok(models) => {
+                        app.add_message(MessageKind::Info, "Available models:".into());
+                        for (i, model) in models.iter().enumerate() {
+                            app.add_message(
+                                MessageKind::Info,
+                                format!("{}: {} ({})", i + 1, model.name, model.id),
+                            );
+                        }
+                        app.add_message(
+                            MessageKind::Info,
+                            "Select a model with /model <number>".into(),
+                        );
+                        app.models = Some(models);
+                    }
+                    Err(e) => {
+                        app.add_message(
+                            MessageKind::Error,
+                            format!("Failed to fetch models: {}", e),
+                        );
+                    }
+                }
+            } else if parts.len() == 2 {
+                if let Ok(n) = parts[1].parse::<usize>() {
+                    if let Some(models) = &app.models {
+                        if n > 0 && n <= models.len() {
+                            let model = &models[n - 1];
+                            app.cfg.provider.model = model.id.clone();
+                            config::save(&app.cfg)?;
+                            app.add_message(
+                                MessageKind::Info,
+                                format!("Model set to {} ({})", model.name, model.id),
+                            );
+                        } else {
+                            app.add_message(MessageKind::Error, "Invalid model number".into());
+                        }
+                    } else {
+                        app.add_message(
+                            MessageKind::Info,
+                            "Please run /model first to see the list of models.".into(),
+                        );
+                    }
+                } else {
+                    app.cfg.provider.model = parts[1].to_string();
+                    config::save(&app.cfg)?;
+                    app.add_message(
+                        MessageKind::Info,
+                        format!("Model set to {}", app.cfg.provider.model),
+                    );
+                }
             } else {
                 app.add_message(
                     MessageKind::Warn,
-                    "Usage: /model <provider/model>, e.g., openai/gpt-4o-mini".into(),
+                    "Usage: /model [<number> | <provider/model>]".into(),
                 );
             }
         }

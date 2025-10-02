@@ -89,3 +89,34 @@ pub async fn propose_edits(cfg: &AppConfig, user_prompt: &str, context: &str) ->
 
     Ok(content)
 }
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct Model {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Deserialize, Debug)]
+struct ModelsResponse {
+    data: Vec<Model>,
+}
+
+pub async fn list_models(cfg: &AppConfig) -> Result<Vec<Model>> {
+    let client = Client::new();
+    let url = format!(
+        "{}/models?category=programming",
+        cfg.provider.base_url.trim_end_matches('/')
+    );
+    let resp: ModelsResponse = client
+        .get(url)
+        .bearer_auth(&cfg.auth.api_key)
+        .send()
+        .await
+        .context("models request failed")?
+        .error_for_status()
+        .context("models non-200")?
+        .json()
+        .await
+        .context("models decode failed")?;
+    Ok(resp.data)
+}

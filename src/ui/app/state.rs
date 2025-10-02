@@ -6,13 +6,12 @@ use std::{
 
 use anyhow::Result;
 use crossterm::event::KeyEvent;
-use ratatui::{Frame, style::Style};
+use ratatui::{style::Style, Frame};
 use tokio::sync::mpsc::UnboundedSender;
 use tui_textarea::TextArea;
 
 use super::review::{PreparedEdit, ReviewState};
-use crate::ui::theme::PROMPT_TEXT;
-use crate::{config, diff, edits, fsutil};
+use crate::{config, diff, edits, fsutil, llm, ui::theme::PROMPT_TEXT};
 
 pub(super) const WELCOME_MSG: &str =
     "Smol CLI — TUI chat. Enter prompts below. y/apply, n/skip during review.";
@@ -34,6 +33,7 @@ pub struct App {
     pub(super) last_backups: Vec<PathBuf>,
     pub(super) should_quit: bool,
     pub(super) caret_visible: bool,
+    pub(super) models: Option<Vec<llm::Model>>,
 }
 
 impl App {
@@ -55,6 +55,7 @@ impl App {
             last_backups: Vec::new(),
             should_quit: false,
             caret_visible: true,
+            models: None,
         };
 
         if app.cfg.auth.api_key.is_empty() {

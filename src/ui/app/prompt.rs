@@ -160,18 +160,20 @@ pub(super) fn try_accept_suggestion(app: &mut App) -> bool {
     };
 
     let mut lines = app.textarea.lines().to_vec();
-    let line = match lines.get_mut(info.token.row) {
-        Some(line) => line,
-        None => return false,
-    };
+    {
+        let line = match lines.get_mut(info.token.row) {
+            Some(line) => line,
+            None => return false,
+        };
 
-    let start_byte = col_to_byte(line, info.token.start_col);
-    let end_byte = col_to_byte(line, info.token.cursor_col);
-    let mut new_line = String::new();
-    new_line.push_str(&line[..start_byte]);
-    new_line.push_str(&replacement);
-    new_line.push_str(&line[end_byte..]);
-    *line = new_line;
+        let start_byte = col_to_byte(line, info.token.start_col);
+        let end_byte = col_to_byte(line, info.token.cursor_col);
+        let mut new_line = String::new();
+        new_line.push_str(&line[..start_byte]);
+        new_line.push_str(&replacement);
+        new_line.push_str(&line[end_byte..]);
+        *line = new_line;
+    }
 
     let new_cursor_col = info.token.start_col + replacement.chars().count();
     set_textarea_with_cursor(app, lines, info.token.row, new_cursor_col);

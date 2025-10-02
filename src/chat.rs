@@ -1,6 +1,6 @@
 use crate::{config, diff as diffmod, edits, fsutil, llm};
 use anyhow::{Context, Result};
-use inquire::{Confirm, Password};
+use inquire::{error::InquireError, Confirm, Password, Select};
 use regex::Regex;
 use std::{
     fs,
@@ -9,6 +9,41 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use tracing::debug;
+
+#[derive(Clone, Copy)]
+struct PresetModel {
+    name: &'static str,
+    id: &'static str,
+}
+
+impl std::fmt::Display for PresetModel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} ({})", self.name, self.id)
+    }
+}
+
+const PRESET_MODELS: &[PresetModel] = &[
+    PresetModel {
+        name: "GPT-4o mini",
+        id: "openai/gpt-4o-mini",
+    },
+    PresetModel {
+        name: "GPT-4o",
+        id: "openai/gpt-4o",
+    },
+    PresetModel {
+        name: "GPT-4o (Reasoning)",
+        id: "openai/gpt-4o-reasoning",
+    },
+    PresetModel {
+        name: "Claude 3.5 Sonnet",
+        id: "anthropic/claude-3.5-sonnet",
+    },
+    PresetModel {
+        name: "Llama 3.1 70B",
+        id: "meta-llama/llama-3.1-70b-instruct",
+    },
+];
 
 pub async fn run(model_override: Option<String>) -> Result<()> {
     let mut cfg = config::load()?;
@@ -98,12 +133,21 @@ async fn handle_slash(
         }
         cmd if cmd.starts_with("/model") => {
             let parts: Vec<_> = cmd.split_whitespace().collect();
-            if parts.len() == 2 {
+            if parts.len() == 1 {
+                match prompt_for_model()? {
+                    Some(model) => {
+                        cfg.provider.model = model.id.to_string();
+                        config::save(cfg)?;
+                        println!("Model set to {} ({})", model.name, model.id);
+                    }
+                    None => println!("Model selection cancelled."),
+                }
+            } else if parts.len() == 2 {
                 cfg.provider.model = parts[1].to_string();
                 config::save(cfg)?;
                 println!("Model set to {}", cfg.provider.model);
             } else {
-                println!("Usage: /model <provider/model>, e.g., openai/gpt-4o-mini");
+                println!("Usage: /model [<provider/model>], e.g., openai/gpt-4o-mini");
             }
         }
         "/undo" => {
@@ -139,6 +183,17 @@ fn target_from_backup(backup_path: &PathBuf) -> Option<PathBuf> {
         Some(std::env::current_dir().ok()?.join(stripped))
     } else {
         None
+    }
+}
+
+fn prompt_for_model() -> Result<Option<PresetModel>> {
+    let options: Vec<PresetModel> = PRESET_MODELS.to_vec();
+    match Select::new("Select a model", options).prompt() {
+        Ok(model) => Ok(Some(model)),
+        Err(InquireError::OperationCanceled) | Err(InquireError::OperationInterrupted) => {
+            Ok(None)
+        }
+        Err(e) => Err(e.into()),
     }
 }
 

@@ -22,7 +22,7 @@ pub(super) async fn submit_prompt(app: &mut App) -> Result<()> {
 
     if trimmed.starts_with('/') {
         app.reset_input();
-        super::input::handle_command(app, trimmed)?;
+        super::input::handle_command(app, trimmed).await?;
         return Ok(());
     }
 
