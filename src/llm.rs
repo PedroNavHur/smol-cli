@@ -71,6 +71,15 @@ Return ONLY JSON with the schema:
 - Never return shell commands.
 - Keep edits minimal and specific."#;
 
+const PLANNER_PROMPT: &str = r#"You are Smol CLI's planning assistant.
+Given a user request, produce a JSON object with the schema:
+{"plan":[{"description":"...", "read": "relative/path.ext" | null}]}
+- Break the work into 2-5 concise steps.
+- Use "read" to request file contents needed for the task (relative to repo root). Use null if reading a file is not required for that step.
+- Prefer explicit file paths like "src/lib.rs" when reading files.
+- Keep descriptions short and actionable.
+Respond with JSON only."#;
+
 pub async fn propose_edits(
     cfg: &AppConfig,
     user_prompt: &str,
@@ -126,6 +135,49 @@ pub async fn propose_edits(
         content,
         usage: resp.usage,
     })
+}
+
+pub async fn generate_plan(cfg: &AppConfig, user_prompt: &str) -> Result<String> {
+    let body = ChatRequest {
+        model: &cfg.provider.model,
+        messages: vec![
+            Message {
+                role: "system",
+                content: PLANNER_PROMPT,
+            },
+            Message {
+                role: "user",
+                content: user_prompt,
+            },
+        ],
+        temperature: Some(0.0),
+    };
+
+    let client = Client::new();
+    let url = format!(
+        "{}/chat/completions",
+        cfg.provider.base_url.trim_end_matches('/')
+    );
+    let resp: ChatResponse = client
+        .post(url)
+        .bearer_auth(&cfg.auth.api_key)
+        .json(&body)
+        .send()
+        .await
+        .context("plan request failed")?
+        .error_for_status()
+        .context("plan non-200")?
+        .json()
+        .await
+        .context("plan decode failed")?;
+
+    let content = resp
+        .choices
+        .first()
+        .map(|c| c.message.content.clone())
+        .unwrap_or_default();
+
+    Ok(content)
 }
 
 #[derive(Debug, Clone)]

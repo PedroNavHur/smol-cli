@@ -1,7 +1,8 @@
 use anyhow::Result;
+use std::path::PathBuf;
 use tokio::spawn;
 
-use crate::{config, edits, llm};
+use crate::{agent, config, edits};
 
 use super::state::{App, AsyncEvent, MessageKind};
 
@@ -44,26 +45,33 @@ pub(super) async fn submit_prompt(app: &mut App) -> Result<()> {
     let cfg = app.cfg.clone();
     let tx = app.tx.clone();
     let prompt = trimmed.to_string();
+    let repo_root = app.repo_root.clone();
 
     spawn(async move {
-        let event = async_handle_prompt(cfg, prompt).await;
+        let event = async_handle_prompt(cfg, repo_root, prompt).await;
         let _ = tx.send(event);
     });
 
     Ok(())
 }
 
-async fn async_handle_prompt(cfg: config::AppConfig, prompt: String) -> AsyncEvent {
+async fn async_handle_prompt(
+    cfg: config::AppConfig,
+    repo_root: PathBuf,
+    prompt: String,
+) -> AsyncEvent {
     let context = super::state::build_context().unwrap_or_else(|_| String::new());
-    match llm::propose_edits(&cfg, &prompt, &context).await {
-        Ok(resp) => match edits::parse_edits(&resp.content) {
+    match agent::run(&cfg, &repo_root, &prompt, context).await {
+        Ok(outcome) => match edits::parse_edits(&outcome.response.content) {
             Ok(batch) => AsyncEvent::Edits {
                 batch,
-                usage: resp.usage,
+                usage: outcome.response.usage,
+                plan: outcome.plan,
+                reads: outcome.reads,
             },
             Err(err) => AsyncEvent::ParseError {
                 error: err.to_string(),
-                raw: resp.content,
+                raw: outcome.response.content,
             },
         },
         Err(err) => AsyncEvent::Error(err.to_string()),

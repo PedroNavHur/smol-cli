@@ -110,15 +110,12 @@ pub(super) async fn on_key(app: &mut App, key: KeyEvent) -> Result<()> {
 }
 
 fn display_cost(cost: Option<f64>) -> String {
-    cost
-        .map(|c| format!("${:.2}/M", c * 1_000.0))
+    cost.map(|c| format!("${:.2}/M", c * 1_000.0))
         .unwrap_or_else(|| "--".into())
 }
 
 fn display_ctx(ctx: Option<u32>) -> String {
-    ctx
-        .map(format_ctx_value)
-        .unwrap_or_else(|| "--".into())
+    ctx.map(format_ctx_value).unwrap_or_else(|| "--".into())
 }
 
 fn format_ctx_value(c: u32) -> String {

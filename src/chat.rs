@@ -1,4 +1,4 @@
-use crate::{config, diff as diffmod, edits, fsutil, llm};
+use crate::{agent, config, diff as diffmod, edits, fsutil};
 use anyhow::{Context, Result};
 use inquire::{Confirm, Password, Select, error::InquireError};
 use regex::Regex;
@@ -63,6 +63,7 @@ pub async fn run(model_override: Option<String>) -> Result<()> {
     println!("Smol CLI — chat mode. Type /help for commands.");
     let mut history: Vec<String> = Vec::new();
     let mut last_backups: Vec<PathBuf> = Vec::new();
+    let repo_root = std::env::current_dir()?;
 
     loop {
         print!("> ");
@@ -82,18 +83,34 @@ pub async fn run(model_override: Option<String>) -> Result<()> {
                 Flow::Exit => break,
             }
         } else {
-            // Build a tiny context (v0): current README if exists
             let ctx = build_context()?;
-            let resp = llm::propose_edits(&cfg, input, &ctx).await?;
-            debug!("LLM raw: {}", resp.content);
+            let agent_outcome = agent::run(&cfg, &repo_root, input, ctx).await?;
 
-            match edits::parse_edits(&resp.content) {
+            if !agent_outcome.plan.is_empty() {
+                println!("Plan:");
+                for (idx, step) in agent_outcome.plan.iter().enumerate() {
+                    match &step.read {
+                        Some(path) => {
+                            println!("  {}. {} [read {}]", idx + 1, step.description, path)
+                        }
+                        None => println!("  {}. {}", idx + 1, step.description),
+                    }
+                }
+            }
+
+            for log in &agent_outcome.reads {
+                println!("{}", agent::format_read_log(log));
+            }
+
+            debug!("LLM raw: {}", agent_outcome.response.content);
+
+            match edits::parse_edits(&agent_outcome.response.content) {
                 Ok(batch) => {
                     apply_with_review(batch, &mut last_backups)?;
                 }
                 Err(e) => {
                     println!("Model did not return valid edits JSON: {e}");
-                    println!("Raw response:\n{}", resp.content);
+                    println!("Raw response:\n{}", agent_outcome.response.content);
                 }
             }
 

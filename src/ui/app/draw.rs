@@ -299,7 +299,6 @@ fn format_ctx_value_opt(ctx: Option<u32>) -> String {
 }
 
 fn format_cost(cost: Option<f64>) -> String {
-    cost
-        .map(|c| format!("${:.2}/M", c * 1_000.0))
+    cost.map(|c| format!("${:.2}/M", c * 1_000.0))
         .unwrap_or_else(|| "--".into())
 }

@@ -6,12 +6,12 @@ use std::{
 
 use anyhow::Result;
 use crossterm::event::KeyEvent;
-use ratatui::{style::Style, Frame};
+use ratatui::{Frame, style::Style};
 use tokio::sync::mpsc::UnboundedSender;
 use tui_textarea::TextArea;
 
 use super::review::{PreparedEdit, ReviewState};
-use crate::{config, diff, edits, fsutil, llm, ui::theme::PROMPT_TEXT};
+use crate::{agent, config, diff, edits, fsutil, llm, ui::theme::PROMPT_TEXT};
 
 pub(super) const WELCOME_MSG: &str =
     "Smol CLI — TUI chat. Enter prompts below. y/apply, n/skip during review.";
@@ -106,7 +106,33 @@ impl App {
                 );
                 self.add_message(MessageKind::Info, format!("Raw response: {raw}"));
             }
-            AsyncEvent::Edits { batch, usage } => {
+            AsyncEvent::Edits {
+                batch,
+                usage,
+                plan,
+                reads,
+            } => {
+                if !plan.is_empty() {
+                    self.add_message(MessageKind::Info, "Plan:".into());
+                    for (idx, step) in plan.iter().enumerate() {
+                        if let Some(path) = &step.read {
+                            self.add_message(
+                                MessageKind::Info,
+                                format!("  {}. {} [read {}]", idx + 1, step.description, path),
+                            );
+                        } else {
+                            self.add_message(
+                                MessageKind::Info,
+                                format!("  {}. {}", idx + 1, step.description),
+                            );
+                        }
+                    }
+                }
+
+                for log in reads {
+                    self.add_message(MessageKind::Info, agent::format_read_log(&log));
+                }
+
                 if batch.edits.is_empty() {
                     self.add_message(MessageKind::Info, "No edits proposed.".into());
                 } else if let Err(err) = self.begin_review(batch) {
@@ -277,8 +303,16 @@ pub(super) struct TokenInfo {
 
 pub enum AsyncEvent {
     Error(String),
-    ParseError { error: String, raw: String },
-    Edits { batch: edits::EditBatch, usage: Option<llm::Usage> },
+    ParseError {
+        error: String,
+        raw: String,
+    },
+    Edits {
+        batch: edits::EditBatch,
+        usage: Option<llm::Usage>,
+        plan: Vec<agent::PlanStep>,
+        reads: Vec<agent::ReadLog>,
+    },
 }
 
 pub(super) fn build_context() -> Result<String> {

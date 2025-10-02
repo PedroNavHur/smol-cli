@@ -3,6 +3,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 use clap::{Parser, Subcommand};
 use tracing::Level;
 
+mod agent;
 mod chat;
 mod config;
 mod diff;
