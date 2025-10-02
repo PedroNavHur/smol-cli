@@ -6,11 +6,7 @@ use std::{
 
 use anyhow::Result;
 use crossterm::event::KeyEvent;
-use ratatui::{
-    Frame,
-    style::{Modifier, Style},
-    widgets::{Block, Borders},
-};
+use ratatui::{Frame, style::Style};
 use tokio::sync::mpsc::UnboundedSender;
 use tui_textarea::TextArea;
 
