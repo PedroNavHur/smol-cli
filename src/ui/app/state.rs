@@ -36,6 +36,7 @@ pub struct App {
     pub(super) models: Option<Vec<llm::Model>>,
     pub(super) model_picker: Option<ModelPickerState>,
     pub(super) last_usage: Option<llm::Usage>,
+    pub(super) current_model: Option<llm::Model>,
 }
 
 impl App {
@@ -60,6 +61,7 @@ impl App {
             models: None,
             model_picker: None,
             last_usage: None,
+            current_model: None,
         };
 
         if app.cfg.auth.api_key.is_empty() {

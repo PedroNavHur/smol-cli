@@ -120,6 +120,24 @@ fn draw_status(app: &App, frame: &mut Frame, area: Rect) {
         Span::styled(&app.cfg.provider.model, Style::default().fg(Color::Cyan)),
     ];
 
+    if let Some(model) = &app.current_model {
+        spans.push(Span::raw("   Rate in "));
+        spans.push(Span::styled(
+            format_cost(model.prompt_cost),
+            Style::default().fg(Color::Yellow),
+        ));
+        spans.push(Span::raw(" out "));
+        spans.push(Span::styled(
+            format_cost(model.completion_cost),
+            Style::default().fg(Color::Yellow),
+        ));
+        spans.push(Span::raw(" ctx "));
+        spans.push(Span::styled(
+            format_ctx_value_opt(model.context_length),
+            Style::default().fg(Color::Yellow),
+        ));
+    }
+
     if let Some(usage) = &app.last_usage {
         spans.push(Span::raw("   Tokens: "));
         if let Some(total) = usage.total_tokens {
@@ -274,4 +292,14 @@ fn format_ctx_value(c: u32) -> String {
     } else {
         format!("{:.1}K", c as f32 / 1000.0)
     }
+}
+
+fn format_ctx_value_opt(ctx: Option<u32>) -> String {
+    ctx.map(format_ctx_value).unwrap_or_else(|| "--".into())
+}
+
+fn format_cost(cost: Option<f64>) -> String {
+    cost
+        .map(|c| format!("${:.2}/M", c * 1_000_000.0))
+        .unwrap_or_else(|| "--".into())
 }

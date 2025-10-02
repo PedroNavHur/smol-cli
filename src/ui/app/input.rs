@@ -55,6 +55,7 @@ pub(super) async fn on_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 if let Some(model) = models.get(picker.index) {
                     app.cfg.provider.model = model.id.clone();
                     config::save(&app.cfg)?;
+                    app.current_model = Some(model.clone());
                     app.add_message(
                         MessageKind::Info,
                         format!(
@@ -165,6 +166,7 @@ pub(super) async fn handle_command(app: &mut App, input: &str) -> Result<()> {
                                 "No programming models available.".into(),
                             );
                             app.models = Some(models);
+                            app.current_model = None;
                             app.model_picker = None;
                         } else {
                             app.add_message(
@@ -175,7 +177,12 @@ pub(super) async fn handle_command(app: &mut App, input: &str) -> Result<()> {
                                 MessageKind::Info,
                                 "Use ↑/↓ to choose, Enter to confirm, Esc to cancel.".into(),
                             );
+                            let current = models
+                                .iter()
+                                .find(|m| m.id == app.cfg.provider.model)
+                                .cloned();
                             app.models = Some(models);
+                            app.current_model = current;
                             app.model_picker = Some(ModelPickerState { index: 0 });
                             app.caret_visible = false;
                         }
@@ -195,6 +202,7 @@ pub(super) async fn handle_command(app: &mut App, input: &str) -> Result<()> {
                             let model = &models[n - 1];
                             app.cfg.provider.model = model.id.clone();
                             config::save(&app.cfg)?;
+                            app.current_model = Some(model.clone());
                             app.add_message(
                                 MessageKind::Info,
                                 format!(
@@ -218,6 +226,7 @@ pub(super) async fn handle_command(app: &mut App, input: &str) -> Result<()> {
                 } else {
                     app.cfg.provider.model = parts[1].to_string();
                     config::save(&app.cfg)?;
+                    app.current_model = None;
                     app.add_message(
                         MessageKind::Info,
                         format!("Model set to {}", app.cfg.provider.model),
@@ -230,6 +239,7 @@ pub(super) async fn handle_command(app: &mut App, input: &str) -> Result<()> {
                     MessageKind::Warn,
                     "Usage: /model [<number> | <provider/model>], e.g., grok-4-fast:free".into(),
                 );
+                app.current_model = None;
                 app.model_picker = None;
                 app.caret_visible = true;
             }
