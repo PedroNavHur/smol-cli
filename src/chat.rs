@@ -1,6 +1,6 @@
 use crate::{config, diff as diffmod, edits, fsutil, llm};
 use anyhow::{Context, Result};
-use inquire::{error::InquireError, Confirm, Password, Select};
+use inquire::{Confirm, Password, Select, error::InquireError};
 use regex::Regex;
 use std::{
     fs,
@@ -23,6 +23,10 @@ impl std::fmt::Display for PresetModel {
 }
 
 const PRESET_MODELS: &[PresetModel] = &[
+    PresetModel {
+        name: "Grok-4 Fast Free",
+        id: "grok-4-fast:free",
+    },
     PresetModel {
         name: "GPT-4o mini",
         id: "openai/gpt-4o-mini",
@@ -147,7 +151,7 @@ async fn handle_slash(
                 config::save(cfg)?;
                 println!("Model set to {}", cfg.provider.model);
             } else {
-                println!("Usage: /model [<provider/model>], e.g., openai/gpt-4o-mini");
+                println!("Usage: /model [<provider/model>], e.g., grok-4-fast:free");
             }
         }
         "/undo" => {
@@ -190,9 +194,7 @@ fn prompt_for_model() -> Result<Option<PresetModel>> {
     let options: Vec<PresetModel> = PRESET_MODELS.to_vec();
     match Select::new("Select a model", options).prompt() {
         Ok(model) => Ok(Some(model)),
-        Err(InquireError::OperationCanceled) | Err(InquireError::OperationInterrupted) => {
-            Ok(None)
-        }
+        Err(InquireError::OperationCanceled) | Err(InquireError::OperationInterrupted) => Ok(None),
         Err(e) => Err(e.into()),
     }
 }

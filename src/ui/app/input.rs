@@ -145,7 +145,7 @@ pub(super) async fn handle_command(app: &mut App, input: &str) -> Result<()> {
             } else {
                 app.add_message(
                     MessageKind::Warn,
-                    "Usage: /model [<number> | <provider/model>]".into(),
+                    "Usage: /model [<number> | <provider/model>], e.g., grok-4-fast:free".into(),
                 );
             }
         }

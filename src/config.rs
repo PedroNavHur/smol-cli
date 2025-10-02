@@ -32,7 +32,7 @@ impl Default for AppConfig {
         Self {
             provider: Provider {
                 base_url: "https://openrouter.ai/api/v1".into(),
-                model: "openai/gpt-4o-mini".into(),
+                model: "grok-4-fast:free".into(),
             },
             auth: Auth { api_key: "".into() },
             runtime: Runtime {

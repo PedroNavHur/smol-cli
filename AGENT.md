@@ -26,7 +26,7 @@ Change the CSS in web/index.html to make buttons rounded and blue.
 	•	Backups + Undo: every edit is backed up in .smol/backups/<timestamp>/, and /undo reverts the last change.
 	•	Slash commands inside chat:
 	•	/login – set API key
-	•	/model – change model (e.g. openai/gpt-4o-mini)
+	•	/model – change model (e.g. grok-4-fast:free)
 	•	/clear – clear session history
 	•	/undo – revert the last applied change
 	•	/stats – show token/message stats
@@ -89,7 +89,7 @@ smol-cli/
 
 OpenRouter Integration
 	•	Base URL: https://openrouter.ai/api/v1
-	•	Default model: openai/gpt-4o-mini
+	•	Default model: grok-4-fast:free
 	•	Auth:
 	•	Env var: OPENROUTER_API_KEY (or SMOL_API_KEY)
 	•	Config file: ~/.config/smolcli/config.toml
@@ -98,7 +98,7 @@ Example config:
 
 [provider]
 base_url = "https://openrouter.ai/api/v1"
-model    = "openai/gpt-4o-mini"
+model    = "grok-4-fast:free"
 
 [auth]
 api_key = "sk-..."
