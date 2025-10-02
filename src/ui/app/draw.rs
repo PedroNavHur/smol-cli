@@ -112,7 +112,7 @@ fn draw_status(app: &App, frame: &mut Frame, area: Rect) {
     let mut spans = vec![
         Span::styled("⏎", icon_style),
         Span::raw(" send   "),
-        Span::styled("⇧⏎", icon_style),
+        Span::styled("⇧/⌥/⌃⏎", icon_style),
         Span::raw(" newline   "),
         Span::styled("⌃C", icon_style),
         Span::raw(" quit   "),
@@ -300,6 +300,6 @@ fn format_ctx_value_opt(ctx: Option<u32>) -> String {
 
 fn format_cost(cost: Option<f64>) -> String {
     cost
-        .map(|c| format!("${:.2}/M", c * 1_000_000.0))
+        .map(|c| format!("${:.2}/M", c * 1_000.0))
         .unwrap_or_else(|| "--".into())
 }

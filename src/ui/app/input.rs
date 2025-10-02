@@ -84,6 +84,16 @@ pub(super) async fn on_key(app: &mut App, key: KeyEvent) -> Result<()> {
         return Ok(());
     }
 
+    if key.code == KeyCode::Enter
+        && (key.modifiers.contains(KeyModifiers::SHIFT)
+            || key.modifiers.contains(KeyModifiers::ALT)
+            || key.modifiers.contains(KeyModifiers::CONTROL))
+    {
+        app.textarea.insert_newline();
+        app.caret_visible = true;
+        return Ok(());
+    }
+
     if key.code == KeyCode::Char('z') && key.modifiers.contains(KeyModifiers::CONTROL) {
         app.undo_last();
         return Ok(());
@@ -101,7 +111,7 @@ pub(super) async fn on_key(app: &mut App, key: KeyEvent) -> Result<()> {
 
 fn display_cost(cost: Option<f64>) -> String {
     cost
-        .map(|c| format!("${:.2}/M", c * 1_000_000.0))
+        .map(|c| format!("${:.2}/M", c * 1_000.0))
         .unwrap_or_else(|| "--".into())
 }
 
