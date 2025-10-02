@@ -34,6 +34,7 @@ pub struct App {
     pub(super) should_quit: bool,
     pub(super) caret_visible: bool,
     pub(super) models: Option<Vec<llm::Model>>,
+    pub(super) model_picker: Option<ModelPickerState>,
 }
 
 impl App {
@@ -56,6 +57,7 @@ impl App {
             should_quit: false,
             caret_visible: true,
             models: None,
+            model_picker: None,
         };
 
         if app.cfg.auth.api_key.is_empty() {
@@ -229,6 +231,10 @@ impl App {
     pub(super) fn undo_last(&mut self) {
         super::review::undo_last(self);
     }
+}
+
+pub(super) struct ModelPickerState {
+    pub(super) index: usize,
 }
 
 #[derive(Clone)]

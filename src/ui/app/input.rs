@@ -4,7 +4,7 @@ use tui_textarea::Input;
 
 use crate::{config, llm, ui::app::prompt};
 
-use super::state::{App, MessageKind, WELCOME_MSG};
+use super::state::{App, MessageKind, ModelPickerState, WELCOME_MSG};
 
 pub(super) async fn on_key(app: &mut App, key: KeyEvent) -> Result<()> {
     app.caret_visible = true;
@@ -35,6 +35,43 @@ pub(super) async fn on_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.caret_visible = true;
             }
             _ => {}
+        }
+        return Ok(());
+    }
+
+    if let (Some(picker), Some(models)) = (app.model_picker.as_mut(), app.models.as_ref()) {
+        match key.code {
+            KeyCode::Up => {
+                if picker.index > 0 {
+                    picker.index -= 1;
+                }
+            }
+            KeyCode::Down => {
+                if picker.index + 1 < models.len() {
+                    picker.index += 1;
+                }
+            }
+            KeyCode::Enter => {
+                if let Some(model) = models.get(picker.index) {
+                    app.cfg.provider.model = model.id.clone();
+                    config::save(&app.cfg)?;
+                    app.add_message(
+                        MessageKind::Info,
+                        format!("Model set to {} ({})", model.name, model.id),
+                    );
+                }
+                app.model_picker = None;
+                app.caret_visible = true;
+            }
+            KeyCode::Esc => {
+                app.model_picker = None;
+                app.add_message(MessageKind::Info, "Model selection cancelled.".into());
+                app.caret_visible = true;
+            }
+            _ => {}
+        }
+        if app.model_picker.is_some() {
+            app.caret_visible = false;
         }
         return Ok(());
     }
@@ -94,24 +131,34 @@ pub(super) async fn handle_command(app: &mut App, input: &str) -> Result<()> {
                 app.add_message(MessageKind::Info, "Fetching models...".into());
                 match llm::list_models(&app.cfg).await {
                     Ok(models) => {
-                        app.add_message(MessageKind::Info, "Available models:".into());
-                        for (i, model) in models.iter().enumerate() {
+                        let count = models.len();
+                        if count == 0 {
+                            app.add_message(
+                                MessageKind::Warn,
+                                "No programming models available.".into(),
+                            );
+                            app.models = Some(models);
+                            app.model_picker = None;
+                        } else {
                             app.add_message(
                                 MessageKind::Info,
-                                format!("{}: {} ({})", i + 1, model.name, model.id),
+                                format!("Loaded {count} programming models."),
                             );
+                            app.add_message(
+                                MessageKind::Info,
+                                "Use ↑/↓ to choose, Enter to confirm, Esc to cancel.".into(),
+                            );
+                            app.models = Some(models);
+                            app.model_picker = Some(ModelPickerState { index: 0 });
+                            app.caret_visible = false;
                         }
-                        app.add_message(
-                            MessageKind::Info,
-                            "Select a model with /model <number>".into(),
-                        );
-                        app.models = Some(models);
                     }
                     Err(e) => {
                         app.add_message(
                             MessageKind::Error,
                             format!("Failed to fetch models: {}", e),
                         );
+                        app.model_picker = None;
                     }
                 }
             } else if parts.len() == 2 {
@@ -142,11 +189,15 @@ pub(super) async fn handle_command(app: &mut App, input: &str) -> Result<()> {
                         format!("Model set to {}", app.cfg.provider.model),
                     );
                 }
+                app.model_picker = None;
+                app.caret_visible = true;
             } else {
                 app.add_message(
                     MessageKind::Warn,
                     "Usage: /model [<number> | <provider/model>], e.g., grok-4-fast:free".into(),
                 );
+                app.model_picker = None;
+                app.caret_visible = true;
             }
         }
         _ => app.add_message(MessageKind::Warn, "Unknown command. /help".into()),

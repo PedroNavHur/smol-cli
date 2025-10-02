@@ -6,6 +6,7 @@ use ratatui::{
 
 use super::review::ReviewState;
 use super::state::{App, MessageKind};
+use crate::llm;
 use crate::ui::{
     app::prompt,
     theme::{
@@ -31,6 +32,24 @@ pub(super) fn draw(app: &mut App, frame: &mut Frame) {
     draw_banner(frame, layout[0]);
 
     let history = render_history(app);
+    let (history_area, picker_area) = if app.review.is_none() {
+        if let (Some(models), Some(picker)) = (&app.models, &app.model_picker) {
+            let picker_height = picker_height(models);
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Min(3),
+                    Constraint::Length(picker_height.max(3)),
+                ])
+                .split(layout[1]);
+            (chunks[0], Some((chunks[1], picker.index)))
+        } else {
+            (layout[1], None)
+        }
+    } else {
+        (layout[1], None)
+    };
+
     let history_block = Paragraph::new(history)
         .block(
             Block::default()
@@ -40,11 +59,14 @@ pub(super) fn draw(app: &mut App, frame: &mut Frame) {
                 .title("Activity"),
         )
         .wrap(Wrap { trim: false });
-    frame.render_widget(history_block, layout[1]);
+    frame.render_widget(history_block, history_area);
 
     if let Some(review) = &app.review {
         let review_block = render_review(review);
         frame.render_widget(review_block, layout[1]);
+    } else if let (Some((area, selected)), Some(models)) = (picker_area, app.models.as_ref()) {
+        let picker_block = render_model_picker(models, selected);
+        frame.render_widget(picker_block, area);
     }
 
     prompt::draw_prompt(app, frame, layout[2]);
@@ -146,4 +168,48 @@ fn render_review(review: &ReviewState) -> Paragraph<'static> {
                 .title("Proposed edit"),
         )
         .wrap(Wrap { trim: false })
+}
+
+fn render_model_picker(models: &[llm::Model], selected: usize) -> Paragraph<'static> {
+    let mut lines = Vec::new();
+    lines.push(Line::raw("Select a model (↑/↓, Enter, Esc)"));
+    let len = models.len();
+    let window = 8usize;
+    let mut start = selected.saturating_sub(window / 2);
+    if start + window > len {
+        start = start.saturating_sub((start + window).saturating_sub(len));
+    }
+    if len > window {
+        start = start.min(len - window);
+    } else {
+        start = 0;
+    }
+    let end = (start + window).min(len);
+    for idx in start..end {
+        let model = &models[idx];
+        let prefix = if idx == selected { ">" } else { " " };
+        let style = if idx == selected {
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+        lines.push(Line::styled(
+            format!("{prefix} {} ({})", model.name, model.id),
+            style,
+        ));
+    }
+
+    Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(UI_BORDER_TYPE)
+                .title("Models"),
+        )
+        .wrap(Wrap { trim: false })
+}
+
+fn picker_height(models: &[llm::Model]) -> u16 {
+    let len = models.len().min(8);
+    (len as u16).saturating_add(2)
 }
