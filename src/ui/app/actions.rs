@@ -46,9 +46,10 @@ pub(super) async fn submit_prompt(app: &mut App) -> Result<()> {
     let tx = app.tx.clone();
     let prompt = trimmed.to_string();
     let repo_root = app.repo_root.clone();
+    let memory = app.memory.clone();
 
     spawn(async move {
-        let event = async_handle_prompt(cfg, repo_root, prompt).await;
+        let event = async_handle_prompt(cfg, repo_root, prompt, memory).await;
         let _ = tx.send(event);
     });
 
@@ -59,19 +60,21 @@ async fn async_handle_prompt(
     cfg: config::AppConfig,
     repo_root: PathBuf,
     prompt: String,
+    memory: Vec<String>,
 ) -> AsyncEvent {
-    let context = super::state::build_context().unwrap_or_else(|_| String::new());
+    let context = super::state::build_context(&memory).unwrap_or_else(|_| String::new());
     match agent::run(&cfg, &repo_root, &prompt, context).await {
         Ok(outcome) => match edits::parse_edits(&outcome.response.content) {
             Ok(batch) => AsyncEvent::Edits {
+                prompt,
                 batch,
-                usage: outcome.response.usage,
-                plan: outcome.plan,
-                reads: outcome.reads,
+                outcome,
             },
             Err(err) => AsyncEvent::ParseError {
                 error: err.to_string(),
-                raw: outcome.response.content,
+                raw: outcome.response.content.clone(),
+                prompt,
+                outcome,
             },
         },
         Err(err) => AsyncEvent::Error(err.to_string()),

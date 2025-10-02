@@ -62,6 +62,7 @@ pub async fn run(model_override: Option<String>) -> Result<()> {
 
     println!("Smol CLI — chat mode. Type /help for commands.");
     let mut history: Vec<String> = Vec::new();
+    let mut memory: Vec<String> = Vec::new();
     let mut last_backups: Vec<PathBuf> = Vec::new();
     let repo_root = std::env::current_dir()?;
 
@@ -83,7 +84,7 @@ pub async fn run(model_override: Option<String>) -> Result<()> {
                 Flow::Exit => break,
             }
         } else {
-            let ctx = build_context()?;
+            let ctx = build_context(&memory)?;
             let agent_outcome = agent::run(&cfg, &repo_root, input, ctx).await?;
 
             if !agent_outcome.plan.is_empty() {
@@ -104,14 +105,25 @@ pub async fn run(model_override: Option<String>) -> Result<()> {
 
             debug!("LLM raw: {}", agent_outcome.response.content);
 
+            let mut parse_failed = false;
             match edits::parse_edits(&agent_outcome.response.content) {
                 Ok(batch) => {
                     apply_with_review(batch, &mut last_backups)?;
                 }
                 Err(e) => {
+                    parse_failed = true;
                     println!("Model did not return valid edits JSON: {e}");
                     println!("Raw response:\n{}", agent_outcome.response.content);
                 }
+            }
+
+            let mut summary = agent::summarize_turn(input, &agent_outcome);
+            if parse_failed {
+                summary.push_str("\nParse error when applying edits.");
+            }
+            memory.push(summary);
+            if memory.len() > 6 {
+                memory.remove(0);
             }
 
             history.push(input.to_string());
@@ -216,11 +228,18 @@ fn prompt_for_model() -> Result<Option<PresetModel>> {
     }
 }
 
-fn build_context() -> Result<String> {
+fn build_context(memory: &[String]) -> Result<String> {
     let mut ctx = String::new();
     if let Ok(readme) = fs::read_to_string("README.md") {
         ctx.push_str("README.md:\n");
         ctx.push_str(&truncate(&readme, 10_000));
+    }
+    if !memory.is_empty() {
+        ctx.push_str("\n\n# Conversation\n");
+        for entry in memory {
+            ctx.push_str(entry);
+            ctx.push_str("\n---\n");
+        }
     }
     Ok(ctx)
 }

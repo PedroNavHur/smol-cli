@@ -37,6 +37,7 @@ pub struct App {
     pub(super) model_picker: Option<ModelPickerState>,
     pub(super) last_usage: Option<llm::Usage>,
     pub(super) current_model: Option<llm::Model>,
+    pub(super) memory: Vec<String>,
 }
 
 impl App {
@@ -62,6 +63,7 @@ impl App {
             model_picker: None,
             last_usage: None,
             current_model: None,
+            memory: Vec::new(),
         };
 
         if app.cfg.auth.api_key.is_empty() {
@@ -98,41 +100,29 @@ impl App {
         self.caret_visible = true;
         match event {
             AsyncEvent::Error(err) => self.add_message(MessageKind::Error, err),
-            AsyncEvent::ParseError { error, raw } => {
-                self.last_usage = None;
+            AsyncEvent::ParseError {
+                error,
+                raw,
+                prompt,
+                outcome,
+            } => {
+                self.render_plan_and_reads(&outcome.plan, &outcome.reads);
                 self.add_message(
                     MessageKind::Error,
                     format!("Model did not return valid edits: {error}"),
                 );
                 self.add_message(MessageKind::Info, format!("Raw response: {raw}"));
+                self.last_usage = outcome.response.usage.clone();
+                let mut summary = agent::summarize_turn(&prompt, &outcome);
+                summary.push_str("\nParse error.");
+                self.push_memory_entry(summary);
             }
             AsyncEvent::Edits {
+                prompt,
                 batch,
-                usage,
-                plan,
-                reads,
+                outcome,
             } => {
-                if !plan.is_empty() {
-                    self.add_message(MessageKind::Info, "Plan:".into());
-                    for (idx, step) in plan.iter().enumerate() {
-                        if let Some(path) = &step.read {
-                            self.add_message(
-                                MessageKind::Info,
-                                format!("  {}. {} [read {}]", idx + 1, step.description, path),
-                            );
-                        } else {
-                            self.add_message(
-                                MessageKind::Info,
-                                format!("  {}. {}", idx + 1, step.description),
-                            );
-                        }
-                    }
-                }
-
-                for log in reads {
-                    self.add_message(MessageKind::Info, agent::format_read_log(&log));
-                }
-
+                self.render_plan_and_reads(&outcome.plan, &outcome.reads);
                 if batch.edits.is_empty() {
                     self.add_message(MessageKind::Info, "No edits proposed.".into());
                 } else if let Err(err) = self.begin_review(batch) {
@@ -141,8 +131,39 @@ impl App {
                         format!("Failed to prepare edits: {err}"),
                     );
                 }
-                self.last_usage = usage;
+                self.last_usage = outcome.response.usage.clone();
+                self.push_memory_entry(agent::summarize_turn(&prompt, &outcome));
             }
+        }
+    }
+
+    fn render_plan_and_reads(&mut self, plan: &[agent::PlanStep], reads: &[agent::ReadLog]) {
+        if !plan.is_empty() {
+            self.add_message(MessageKind::Info, "Plan:".into());
+            for (idx, step) in plan.iter().enumerate() {
+                if let Some(path) = &step.read {
+                    self.add_message(
+                        MessageKind::Info,
+                        format!("  {}. {} [read {}]", idx + 1, step.description, path),
+                    );
+                } else {
+                    self.add_message(
+                        MessageKind::Info,
+                        format!("  {}. {}", idx + 1, step.description),
+                    );
+                }
+            }
+        }
+
+        for log in reads {
+            self.add_message(MessageKind::Info, agent::format_read_log(log));
+        }
+    }
+
+    fn push_memory_entry(&mut self, entry: String) {
+        self.memory.push(entry);
+        if self.memory.len() > 6 {
+            self.memory.remove(0);
         }
     }
 
@@ -306,20 +327,28 @@ pub enum AsyncEvent {
     ParseError {
         error: String,
         raw: String,
+        prompt: String,
+        outcome: agent::AgentOutcome,
     },
     Edits {
+        prompt: String,
         batch: edits::EditBatch,
-        usage: Option<llm::Usage>,
-        plan: Vec<agent::PlanStep>,
-        reads: Vec<agent::ReadLog>,
+        outcome: agent::AgentOutcome,
     },
 }
 
-pub(super) fn build_context() -> Result<String> {
+pub(super) fn build_context(memory: &[String]) -> Result<String> {
     let mut ctx = String::new();
     if let Ok(readme) = fs::read_to_string("README.md") {
         ctx.push_str("README.md:\n");
         ctx.push_str(&truncate(&readme, 10_000));
+    }
+    if !memory.is_empty() {
+        ctx.push_str("\n\n# Conversation\n");
+        for entry in memory {
+            ctx.push_str(entry);
+            ctx.push_str("\n---\n");
+        }
     }
     Ok(ctx)
 }

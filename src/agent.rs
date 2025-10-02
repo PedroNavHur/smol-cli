@@ -31,7 +31,7 @@ pub struct ReadLog {
     pub outcome: ReadOutcome,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct AgentOutcome {
     pub plan: Vec<PlanStep>,
     pub reads: Vec<ReadLog>,
@@ -184,4 +184,46 @@ pub fn format_read_log(log: &ReadLog) -> String {
         ReadOutcome::Failed { error } => format!("Failed to read {}: {error}", log.path),
         ReadOutcome::Skipped => format!("Skipped duplicate read of {}", log.path),
     }
+}
+
+pub fn summarize_turn(user_prompt: &str, outcome: &AgentOutcome) -> String {
+    let mut summary = String::new();
+    summary.push_str("User: ");
+    summary.push_str(user_prompt);
+    summary.push('\n');
+
+    if outcome.plan.is_empty() {
+        summary.push_str("Plan: (none)\n");
+    } else {
+        summary.push_str("Plan:\n");
+        for (idx, step) in outcome.plan.iter().enumerate() {
+            if let Some(path) = &step.read {
+                summary.push_str(&format!(
+                    "  {}. {} [read {}]\n",
+                    idx + 1,
+                    step.description,
+                    path
+                ));
+            } else {
+                summary.push_str(&format!("  {}. {}\n", idx + 1, step.description));
+            }
+        }
+    }
+
+    if outcome.reads.is_empty() {
+        summary.push_str("Reads: (none)\n");
+    } else {
+        summary.push_str("Reads:\n");
+        for log in &outcome.reads {
+            summary.push_str("  ");
+            summary.push_str(&format_read_log(log));
+            summary.push('\n');
+        }
+    }
+
+    summary.push_str("Assistant:\n");
+    let truncated = truncate(&outcome.response.content, 1_000);
+    summary.push_str(&truncated);
+
+    summary
 }
