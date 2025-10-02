@@ -106,7 +106,7 @@ impl App {
                 prompt,
                 outcome,
             } => {
-                self.render_plan_and_reads(&outcome.plan, &outcome.reads);
+                self.render_plan_and_actions(&outcome.plan, &outcome.reads, &outcome.creates);
                 self.add_message(
                     MessageKind::Error,
                     format!("Model did not return valid edits: {error}"),
@@ -122,7 +122,7 @@ impl App {
                 batch,
                 outcome,
             } => {
-                self.render_plan_and_reads(&outcome.plan, &outcome.reads);
+                self.render_plan_and_actions(&outcome.plan, &outcome.reads, &outcome.creates);
                 if batch.edits.is_empty() {
                     self.add_message(MessageKind::Info, "No edits proposed.".into());
                 } else if let Err(err) = self.begin_review(batch) {
@@ -137,19 +137,36 @@ impl App {
         }
     }
 
-    fn render_plan_and_reads(&mut self, plan: &[agent::PlanStep], reads: &[agent::ReadLog]) {
+    fn render_plan_and_actions(
+        &mut self,
+        plan: &[agent::PlanStep],
+        reads: &[agent::ReadLog],
+        creates: &[agent::CreateLog],
+    ) {
         if !plan.is_empty() {
             self.add_message(MessageKind::Info, "Plan:".into());
             for (idx, step) in plan.iter().enumerate() {
+                let mut annotations = Vec::new();
                 if let Some(path) = &step.read {
+                    annotations.push(format!("read {}", path));
+                }
+                if let Some(path) = &step.create {
+                    annotations.push(format!("create {}", path));
+                }
+                if annotations.is_empty() {
                     self.add_message(
                         MessageKind::Info,
-                        format!("  {}. {} [read {}]", idx + 1, step.description, path),
+                        format!("  {}. {}", idx + 1, step.description),
                     );
                 } else {
                     self.add_message(
                         MessageKind::Info,
-                        format!("  {}. {}", idx + 1, step.description),
+                        format!(
+                            "  {}. {} [{}]",
+                            idx + 1,
+                            step.description,
+                            annotations.join(", ")
+                        ),
                     );
                 }
             }
@@ -157,6 +174,10 @@ impl App {
 
         for log in reads {
             self.add_message(MessageKind::Info, agent::format_read_log(log));
+        }
+
+        for log in creates {
+            self.add_message(MessageKind::Info, agent::format_create_log(log));
         }
     }
 

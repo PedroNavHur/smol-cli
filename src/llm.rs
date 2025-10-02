@@ -73,10 +73,11 @@ Return ONLY JSON with the schema:
 
 const PLANNER_PROMPT: &str = r#"You are Smol CLI's planning assistant.
 Given a user request, produce a JSON object with the schema:
-{"plan":[{"description":"...", "read": "relative/path.ext" | null}]}
+{"plan":[{"description":"...", "read": "relative/path.ext" | null, "create": "relative/new_file" | null}]}
 - Break the work into 2-5 concise steps.
 - Use "read" to request file contents needed for the task (relative to repo root). Use null if reading a file is not required for that step.
-- Prefer explicit file paths like "src/lib.rs" when reading files.
+- Use "create" to ask for new files that should be created (omit or set null if no creation is needed).
+- Prefer explicit paths like "src/lib.rs" or "tests/new_test.rs".
 - Keep descriptions short and actionable.
 Respond with JSON only."#;
 

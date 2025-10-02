@@ -90,17 +90,32 @@ pub async fn run(model_override: Option<String>) -> Result<()> {
             if !agent_outcome.plan.is_empty() {
                 println!("Plan:");
                 for (idx, step) in agent_outcome.plan.iter().enumerate() {
-                    match &step.read {
-                        Some(path) => {
-                            println!("  {}. {} [read {}]", idx + 1, step.description, path)
-                        }
-                        None => println!("  {}. {}", idx + 1, step.description),
+                    let mut annotations = Vec::new();
+                    if let Some(path) = &step.read {
+                        annotations.push(format!("read {}", path));
+                    }
+                    if let Some(path) = &step.create {
+                        annotations.push(format!("create {}", path));
+                    }
+                    if annotations.is_empty() {
+                        println!("  {}. {}", idx + 1, step.description);
+                    } else {
+                        println!(
+                            "  {}. {} [{}]",
+                            idx + 1,
+                            step.description,
+                            annotations.join(", ")
+                        );
                     }
                 }
             }
 
             for log in &agent_outcome.reads {
                 println!("{}", agent::format_read_log(log));
+            }
+
+            for log in &agent_outcome.creates {
+                println!("{}", agent::format_create_log(log));
             }
 
             debug!("LLM raw: {}", agent_outcome.response.content);

@@ -16,6 +16,7 @@ const MAX_CONTEXT_BYTES_PER_FILE: usize = 8_000;
 pub struct PlanStep {
     pub description: String,
     pub read: Option<String>,
+    pub create: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -32,9 +33,23 @@ pub struct ReadLog {
 }
 
 #[derive(Debug, Clone)]
+pub enum CreateOutcome {
+    Created,
+    AlreadyExists,
+    Failed { error: String },
+}
+
+#[derive(Debug, Clone)]
+pub struct CreateLog {
+    pub path: String,
+    pub outcome: CreateOutcome,
+}
+
+#[derive(Debug, Clone)]
 pub struct AgentOutcome {
     pub plan: Vec<PlanStep>,
     pub reads: Vec<ReadLog>,
+    pub creates: Vec<CreateLog>,
     pub response: llm::EditResponse,
 }
 
@@ -57,9 +72,44 @@ pub async fn run(
     };
 
     let mut reads = Vec::new();
+    let mut creates = Vec::new();
     let mut seen_paths: HashSet<String> = HashSet::new();
+    let mut seen_creations: HashSet<String> = HashSet::new();
 
     for step in &plan_steps {
+        if let Some(path) = step
+            .create
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            if !seen_creations.insert(path.to_string()) {
+                creates.push(CreateLog {
+                    path: path.to_string(),
+                    outcome: CreateOutcome::AlreadyExists,
+                });
+            } else {
+                match create_file(repo_root, path) {
+                    Ok(created) => {
+                        creates.push(CreateLog {
+                            path: path.to_string(),
+                            outcome: if created {
+                                CreateOutcome::Created
+                            } else {
+                                CreateOutcome::AlreadyExists
+                            },
+                        });
+                    }
+                    Err(err) => creates.push(CreateLog {
+                        path: path.to_string(),
+                        outcome: CreateOutcome::Failed {
+                            error: err.to_string(),
+                        },
+                    }),
+                }
+            }
+        }
+
         if let Some(path) = step
             .read
             .as_ref()
@@ -104,6 +154,7 @@ pub async fn run(
     Ok(AgentOutcome {
         plan: plan_steps,
         reads,
+        creates,
         response,
     })
 }
@@ -117,6 +168,21 @@ fn read_file(repo_root: &Path, rel: &str) -> Result<(PathBuf, String)> {
     Ok((abs, contents))
 }
 
+fn create_file(repo_root: &Path, rel: &str) -> Result<bool> {
+    let rel_path = Path::new(rel);
+    let abs = fsutil::ensure_inside_repo(repo_root, rel_path)
+        .with_context(|| format!("invalid path {rel}"))?;
+    if abs.exists() {
+        return Ok(false);
+    }
+    if let Some(parent) = abs.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create parent dirs for {}", abs.display()))?;
+    }
+    fs::write(&abs, b"").with_context(|| format!("failed to create file {}", abs.display()))?;
+    Ok(true)
+}
+
 fn parse_plan(content: &str) -> Option<Vec<PlanStep>> {
     #[derive(Deserialize)]
     struct RawPlan {
@@ -128,6 +194,8 @@ fn parse_plan(content: &str) -> Option<Vec<PlanStep>> {
         description: String,
         #[serde(default)]
         read: Option<String>,
+        #[serde(default)]
+        create: Option<String>,
     }
 
     let parsed: RawPlan = serde_json::from_str(content).ok()?;
@@ -145,6 +213,10 @@ fn parse_plan(content: &str) -> Option<Vec<PlanStep>> {
                         .read
                         .map(|r| r.trim().to_string())
                         .filter(|s| !s.is_empty()),
+                    create: step
+                        .create
+                        .map(|c| c.trim().to_string())
+                        .filter(|s| !s.is_empty()),
                 })
             }
         })
@@ -156,6 +228,7 @@ fn fallback_plan(user_prompt: &str) -> Vec<PlanStep> {
     vec![PlanStep {
         description: format!("Review project context and answer: {user_prompt}"),
         read: None,
+        create: None,
     }]
 }
 
@@ -183,6 +256,14 @@ pub fn format_read_log(log: &ReadLog) -> String {
         }
         ReadOutcome::Failed { error } => format!("Failed to read {}: {error}", log.path),
         ReadOutcome::Skipped => format!("Skipped duplicate read of {}", log.path),
+    }
+}
+
+pub fn format_create_log(log: &CreateLog) -> String {
+    match &log.outcome {
+        CreateOutcome::Created => format!("Created {}", log.path),
+        CreateOutcome::AlreadyExists => format!("Skipped create (exists) {}", log.path),
+        CreateOutcome::Failed { error } => format!("Failed to create {}: {error}", log.path),
     }
 }
 
@@ -217,6 +298,17 @@ pub fn summarize_turn(user_prompt: &str, outcome: &AgentOutcome) -> String {
         for log in &outcome.reads {
             summary.push_str("  ");
             summary.push_str(&format_read_log(log));
+            summary.push('\n');
+        }
+    }
+
+    if outcome.creates.is_empty() {
+        summary.push_str("Creates: (none)\n");
+    } else {
+        summary.push_str("Creates:\n");
+        for log in &outcome.creates {
+            summary.push_str("  ");
+            summary.push_str(&format_create_log(log));
             summary.push('\n');
         }
     }
