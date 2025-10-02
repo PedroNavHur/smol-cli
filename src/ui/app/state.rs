@@ -6,7 +6,11 @@ use std::{
 
 use anyhow::Result;
 use crossterm::event::KeyEvent;
-use ratatui::{Frame, style::Style};
+use ratatui::{
+    Frame,
+    style::{Modifier, Style},
+    widgets::{Block, Borders},
+};
 use tokio::sync::mpsc::UnboundedSender;
 use tui_textarea::TextArea;
 
@@ -322,6 +326,7 @@ fn build_textarea() -> TextArea<'static> {
     let mut textarea = TextArea::default();
     textarea.set_placeholder_text("Describe the change you want");
     textarea.set_style(Style::default().fg(PROMPT_TEXT));
+    textarea.set_cursor_line_style(Style::default());
     textarea
 }
 
