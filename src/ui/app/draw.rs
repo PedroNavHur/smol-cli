@@ -202,19 +202,19 @@ fn draw_status(app: &App, frame: &mut Frame, area: Rect) {
 }
 
 fn render_history(app: &App) -> Vec<Line<'static>> {
-    app.messages
-        .iter()
-        .skip(app.activity_scroll)
-        .map(|m| {
-            let style = match m.kind {
-                MessageKind::User => Style::default().fg(Color::Cyan),
-                MessageKind::Warn => Style::default().fg(Color::Yellow),
-                MessageKind::Error => Style::default().fg(Color::Red),
-                MessageKind::Info => Style::default().fg(Color::Gray),
-            };
-            Line::from(Span::styled(m.content.clone(), style))
-        })
-        .collect()
+    let mut lines = Vec::new();
+    for message in app.messages.iter().skip(app.activity_scroll) {
+        let style = match message.kind {
+            MessageKind::User => Style::default().fg(Color::Cyan),
+            MessageKind::Warn => Style::default().fg(Color::Yellow),
+            MessageKind::Error => Style::default().fg(Color::Red),
+            MessageKind::Info => Style::default().fg(Color::Gray),
+            MessageKind::Tool => Style::default().fg(Color::DarkGray),
+        };
+        lines.push(Line::from(Span::styled(message.content.clone(), style)));
+        lines.push(Line::from(Span::raw(""))); // Add empty line between messages
+    }
+    lines
 }
 
 fn render_review(review: &ReviewState) -> Paragraph<'static> {

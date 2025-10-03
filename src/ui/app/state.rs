@@ -28,6 +28,7 @@ pub struct App {
     pub(super) messages: Vec<Message>,
     pub(super) view_offset: (u16, u16),
     pub(super) activity_scroll: usize,
+    pub(super) completed_steps: Vec<bool>,
     pub(super) history: Vec<String>,
     pub(super) awaiting_response: bool,
     pub(super) review: Option<ReviewState>,
@@ -56,6 +57,7 @@ impl App {
             messages: Vec::new(),
             view_offset: (0, 0),
             activity_scroll: 0,
+            completed_steps: Vec::new(),
             history: Vec::new(),
             awaiting_response: false,
             review: None,
@@ -145,7 +147,7 @@ impl App {
                                 self.add_message(MessageKind::Info, answer);
                             }
                         }
-                        self.add_message(MessageKind::Info, "Analysis complete.".into());
+                        self.add_message(MessageKind::Tool, "Analysis complete.".into());
                     } else if is_informational {
                         // For informational queries without explicit answer, provide a fallback response
                         self.add_message(MessageKind::Info, "Codebase exploration completed. Here's what I found:".into());
@@ -154,10 +156,10 @@ impl App {
                         for action in &actions {
                             match action {
                                 edits::Action::ReadFile { path } => {
-                                    self.add_message(MessageKind::Info, format!("- Read file: {}", path));
+                                    self.add_message(MessageKind::Tool, format!("- Read file: {}", path));
                                 }
                                 edits::Action::ListDirectory { path } => {
-                                    self.add_message(MessageKind::Info, format!("- Listed directory: {}", path));
+                                    self.add_message(MessageKind::Tool, format!("- Listed directory: {}", path));
                                 }
                                 _ => {}
                             }
@@ -212,8 +214,17 @@ impl App {
         creates: &[agent::CreateLog],
     ) {
         if !plan.is_empty() {
+            // Reset completed_steps for new plan
+            self.completed_steps = vec![false; plan.len()];
+
             self.add_message(MessageKind::Info, "Plan:".into());
             for (idx, step) in plan.iter().enumerate() {
+                let checkbox = if self.completed_steps.get(idx).copied().unwrap_or(false) {
+                    "✓"
+                } else {
+                    "□"
+                };
+
                 let mut annotations = Vec::new();
                 if let Some(path) = &step.read {
                     annotations.push(format!("read {}", path));
@@ -224,18 +235,62 @@ impl App {
                 if annotations.is_empty() {
                     self.add_message(
                         MessageKind::Info,
-                        format!("  {}. {}", idx + 1, step.description),
+                        format!("  {} {}. {}", checkbox, idx + 1, step.description),
                     );
                 } else {
                     self.add_message(
                         MessageKind::Info,
                         format!(
-                            "  {}. {} [{}]",
+                            "  {} {}. {} [{}]",
+                            checkbox,
                             idx + 1,
                             step.description,
                             annotations.join(", ")
                         ),
                     );
+                }
+            }
+        }
+
+        // Update completed steps based on reads and creates
+        for log in reads {
+            if let agent::ReadOutcome::Success { .. } = &log.outcome {
+                // Mark read steps as completed
+                for (idx, step) in plan.iter().enumerate() {
+                    if let Some(read_path) = &step.read {
+                        if log.path == *read_path {
+                            if let Some(completed) = self.completed_steps.get_mut(idx) {
+                                *completed = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        for log in creates {
+            if let agent::CreateOutcome::Created = &log.outcome {
+                // Mark create steps as completed
+                for (idx, step) in plan.iter().enumerate() {
+                    if let Some(create_path) = &step.create {
+                        if log.path == *create_path {
+                            if let Some(completed) = self.completed_steps.get_mut(idx) {
+                                *completed = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Mark list_directory steps as completed
+        for (idx, step) in plan.iter().enumerate() {
+            if step.description.contains("List directory") && !self.completed_steps.get(idx).copied().unwrap_or(false) {
+                // Check if we've done any directory listing
+                if !reads.is_empty() || !creates.is_empty() {
+                    if let Some(completed) = self.completed_steps.get_mut(idx) {
+                        *completed = true;
+                    }
                 }
             }
         }
@@ -399,6 +454,7 @@ pub(super) enum MessageKind {
     Info,
     Warn,
     Error,
+    Tool,
 }
 
 pub(super) struct SuggestionInfo {
