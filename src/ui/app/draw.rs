@@ -1,7 +1,7 @@
 use ratatui::{
     prelude::*,
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Padding, Paragraph, Wrap},
 };
 
 use super::review::ReviewState;
@@ -230,27 +230,32 @@ fn render_history(app: &App) -> Vec<Line<'static>> {
 }
 
 fn parse_message(content: &str, base_style: Style) -> Vec<Span<'static>> {
+    let style = if content.contains("Plan:") {
+        base_style.bg(Color::Rgb(30, 30, 30))
+    } else {
+        base_style
+    };
     let mut spans = Vec::new();
     let mut remaining = content;
     while let Some(start) = remaining.find("[highlight]") {
         if start > 0 {
-            spans.push(Span::styled(remaining[..start].to_string(), base_style));
+            spans.push(Span::styled(remaining[..start].to_string(), style));
         }
         remaining = &remaining[start + 11..]; // len("[highlight]")
         if let Some(end) = remaining.find("[/highlight]") {
             spans.push(Span::styled(
                 remaining[..end].to_string(),
-                base_style.fg(Color::Cyan),
+                style.fg(Color::Cyan),
             ));
             remaining = &remaining[end + 12..]; // len("[/highlight]")
         } else {
             // malformed, add rest
-            spans.push(Span::styled(remaining.to_string(), base_style));
+            spans.push(Span::styled(remaining.to_string(), style));
             break;
         }
     }
     if !remaining.is_empty() {
-        spans.push(Span::styled(remaining.to_string(), base_style));
+        spans.push(Span::styled(remaining.to_string(), style));
     }
     spans
 }
@@ -276,6 +281,8 @@ fn render_review(review: &ReviewState) -> Paragraph<'static> {
             Block::default()
                 .borders(Borders::ALL)
                 .border_type(UI_BORDER_TYPE)
+                .style(Style::default().bg(Color::Rgb(30, 30, 30)))
+                .padding(Padding::uniform(1))
                 .title("Proposed edit"),
         )
         .wrap(Wrap { trim: false })
