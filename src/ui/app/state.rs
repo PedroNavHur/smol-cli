@@ -38,6 +38,7 @@ pub struct App {
     pub(super) last_usage: Option<llm::Usage>,
     pub(super) current_model: Option<llm::Model>,
     pub(super) memory: Vec<String>,
+    pub(super) total_tokens_used: u64,
 }
 
 impl App {
@@ -64,6 +65,7 @@ impl App {
             last_usage: None,
             current_model: None,
             memory: Vec::new(),
+            total_tokens_used: 0,
         };
 
         if app.cfg.auth.api_key.is_empty() {
@@ -113,6 +115,9 @@ impl App {
                 );
                 self.add_message(MessageKind::Info, format!("Raw response: {raw}"));
                 self.last_usage = outcome.response.usage.clone();
+                if let Some(tokens) = outcome.response.usage.as_ref().and_then(|u| u.total_tokens) {
+                    self.total_tokens_used += tokens as u64;
+                }
                 let mut summary = agent::summarize_turn(&prompt, &outcome);
                 summary.push_str("\nParse error.");
                 self.push_memory_entry(summary);
@@ -132,6 +137,9 @@ impl App {
                     );
                 }
                 self.last_usage = outcome.response.usage.clone();
+                if let Some(tokens) = outcome.response.usage.as_ref().and_then(|u| u.total_tokens) {
+                    self.total_tokens_used += tokens as u64;
+                }
                 self.push_memory_entry(agent::summarize_turn(&prompt, &outcome));
             }
         }

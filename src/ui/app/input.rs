@@ -147,6 +147,7 @@ pub(super) async fn handle_command(app: &mut App, input: &str) -> Result<()> {
             app.messages.clear();
             app.history.clear();
             app.memory.clear();
+            app.total_tokens_used = 0;
             app.add_message(MessageKind::Info, "History cleared.".into());
             app.add_message(MessageKind::Info, WELCOME_MSG.into());
         }

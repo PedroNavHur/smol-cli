@@ -108,73 +108,85 @@ fn draw_status(app: &App, frame: &mut Frame, area: Rect) {
         return;
     }
 
+    let mut first_line_spans = vec![
+        Span::raw("Model: "),
+        Span::styled(&app.cfg.provider.model, Style::default().fg(Color::Cyan)),
+    ];
+
+    if let Some(model) = &app.current_model {
+        first_line_spans.push(Span::raw("   Rate in "));
+        first_line_spans.push(Span::styled(
+            format_cost(model.prompt_cost),
+            Style::default().fg(Color::Yellow),
+        ));
+        first_line_spans.push(Span::raw(" out "));
+        first_line_spans.push(Span::styled(
+            format_cost(model.completion_cost),
+            Style::default().fg(Color::Yellow),
+        ));
+        first_line_spans.push(Span::raw(" ctx "));
+        first_line_spans.push(Span::styled(
+            format_ctx_value_opt(model.context_length),
+            Style::default().fg(Color::Yellow),
+        ));
+    }
+
     let icon_style = Style::default().fg(STATUS_TEXT);
-    let mut spans = vec![
+    let mut second_line_spans = vec![
         Span::styled("⏎", icon_style),
         Span::raw(" send   "),
         Span::styled("⇧/⌥/⌃⏎", icon_style),
         Span::raw(" newline   "),
         Span::styled("⌃C", icon_style),
         Span::raw(" quit   "),
-        Span::raw("Model: "),
-        Span::styled(&app.cfg.provider.model, Style::default().fg(Color::Cyan)),
     ];
 
-    if let Some(model) = &app.current_model {
-        spans.push(Span::raw("   Rate in "));
-        spans.push(Span::styled(
-            format_cost(model.prompt_cost),
-            Style::default().fg(Color::Yellow),
-        ));
-        spans.push(Span::raw(" out "));
-        spans.push(Span::styled(
-            format_cost(model.completion_cost),
-            Style::default().fg(Color::Yellow),
-        ));
-        spans.push(Span::raw(" ctx "));
-        spans.push(Span::styled(
-            format_ctx_value_opt(model.context_length),
-            Style::default().fg(Color::Yellow),
-        ));
-    }
-
     if let Some(usage) = &app.last_usage {
-        spans.push(Span::raw("   Tokens: "));
+        second_line_spans.push(Span::raw("   Tokens: "));
         if let Some(total) = usage.total_tokens {
-            spans.push(Span::styled(
+            second_line_spans.push(Span::styled(
                 total.to_string(),
                 Style::default().fg(Color::Yellow),
             ));
         } else {
-            spans.push(Span::raw("--"));
+            second_line_spans.push(Span::raw("--"));
         }
 
         if usage.prompt_tokens.is_some() || usage.completion_tokens.is_some() {
-            spans.push(Span::raw(" (prompt "));
+            second_line_spans.push(Span::raw(" (prompt "));
             let prompt = usage
                 .prompt_tokens
                 .map(|p| p.to_string())
                 .unwrap_or_else(|| "--".into());
-            spans.push(Span::styled(prompt, Style::default().fg(Color::Yellow)));
-            spans.push(Span::raw(", completion "));
+            second_line_spans.push(Span::styled(prompt, Style::default().fg(Color::Yellow)));
+            second_line_spans.push(Span::raw(", completion "));
             let completion = usage
                 .completion_tokens
                 .map(|c| c.to_string())
                 .unwrap_or_else(|| "--".into());
-            spans.push(Span::styled(completion, Style::default().fg(Color::Yellow)));
-            spans.push(Span::raw(")"));
+            second_line_spans.push(Span::styled(completion, Style::default().fg(Color::Yellow)));
+            second_line_spans.push(Span::raw(")"));
         }
 
         if let Some(cost) = usage.total_cost {
-            spans.push(Span::raw("   Cost: $"));
-            spans.push(Span::styled(
+            second_line_spans.push(Span::raw("   Cost: $"));
+            second_line_spans.push(Span::styled(
                 format!("{cost:.4}"),
                 Style::default().fg(Color::Green),
             ));
         }
     }
-    let line = Line::from(spans);
-    let paragraph = Paragraph::new(line)
+
+    second_line_spans.push(Span::styled(
+        format!("   {} tokens used", app.total_tokens_used),
+        Style::default().fg(Color::Yellow),
+    ));
+
+    let lines = vec![
+        Line::from(first_line_spans),
+        Line::from(second_line_spans),
+    ];
+    let paragraph = Paragraph::new(lines)
         .alignment(Alignment::Left)
         .style(Style::default().fg(STATUS_TEXT));
     frame.render_widget(paragraph, area);
