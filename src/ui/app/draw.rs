@@ -16,13 +16,14 @@ use crate::ui::{
 };
 
 pub(super) fn draw(app: &mut App, frame: &mut Frame) {
+    let prompt_lines = app.textarea.lines().len().max(1).min(10) as u16;
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints(
             [
                 Constraint::Length(3),
-                Constraint::Percentage(65),
-                Constraint::Percentage(28),
+                Constraint::Min(10),
+                Constraint::Length(prompt_lines + 2),
                 Constraint::Length(2),
             ]
             .as_ref(),
