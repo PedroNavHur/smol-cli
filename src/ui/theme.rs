@@ -17,7 +17,7 @@ pub const BANNER_BORDER: Color = SANDY_BROWN;
 pub const BANNER_TEXT: Color = SANDY_BROWN;
 pub const BANNER_CAT_EAR: Color = SANDY_BROWN;
 pub const BANNER_CAT_EYE: Color = VANILLA;
-pub const BANNER_CAT_MOUTH: Color = SANDY_BROWN;
+pub const BANNER_CAT_MOUTH: Color = FIRE_BRICK;
 pub const BANNER_CAT_WHISKER: Color = FIRE_BRICK;
 
 pub const STATUS_TEXT: Color = VANILLA;

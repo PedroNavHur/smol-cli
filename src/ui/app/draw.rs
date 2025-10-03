@@ -222,10 +222,37 @@ fn render_history(app: &App) -> Vec<Line<'static>> {
             MessageKind::Info => Style::default().fg(Color::Gray),
             MessageKind::Tool => Style::default().fg(Color::DarkGray),
         };
-        lines.push(Line::from(Span::styled(message.content.clone(), style)));
+        let spans = parse_message(&message.content, style);
+        lines.push(Line::from(spans));
         lines.push(Line::from(Span::raw(""))); // Add empty line between messages
     }
     lines
+}
+
+fn parse_message(content: &str, base_style: Style) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut remaining = content;
+    while let Some(start) = remaining.find("[highlight]") {
+        if start > 0 {
+            spans.push(Span::styled(remaining[..start].to_string(), base_style));
+        }
+        remaining = &remaining[start + 11..]; // len("[highlight]")
+        if let Some(end) = remaining.find("[/highlight]") {
+            spans.push(Span::styled(
+                remaining[..end].to_string(),
+                base_style.fg(Color::Cyan),
+            ));
+            remaining = &remaining[end + 12..]; // len("[/highlight]")
+        } else {
+            // malformed, add rest
+            spans.push(Span::styled(remaining.to_string(), base_style));
+            break;
+        }
+    }
+    if !remaining.is_empty() {
+        spans.push(Span::styled(remaining.to_string(), base_style));
+    }
+    spans
 }
 
 fn render_review(review: &ReviewState) -> Paragraph<'static> {

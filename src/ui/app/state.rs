@@ -83,7 +83,7 @@ impl App {
         let location = display_repo_path(&app.repo_root);
         app.add_message(
             MessageKind::Info,
-            format!("You are using Smol CLI in {location}"),
+            format!("You are using Smol CLI in [highlight]{location}[/highlight]"),
         );
 
         app
