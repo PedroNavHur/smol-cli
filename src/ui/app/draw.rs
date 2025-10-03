@@ -47,6 +47,15 @@ pub(super) fn draw(app: &mut App, frame: &mut Frame) {
         (layout[1], None)
     };
 
+    // Calculate how many messages can fit
+    let messages_per_screen = (history_area.height / 2).max(1) as usize;
+    // Auto-scroll to show the latest messages
+    let target_scroll = app.messages.len().saturating_sub(messages_per_screen);
+    // Only auto-scroll if not manually scrolled up
+    if app.activity_scroll == 0 || app.activity_scroll < target_scroll {
+        app.activity_scroll = target_scroll;
+    }
+
     let history_block = Paragraph::new(history)
         .block(
             Block::default()
@@ -55,6 +64,7 @@ pub(super) fn draw(app: &mut App, frame: &mut Frame) {
                 .border_style(Style::default().fg(ACTIVITY_BORDER))
                 .title("Activity"),
         )
+        .scroll(((app.activity_scroll * 2).try_into().unwrap(), 0))
         .wrap(Wrap { trim: false });
     frame.render_widget(history_block, history_area);
 
@@ -203,7 +213,7 @@ fn draw_status(app: &App, frame: &mut Frame, area: Rect) {
 
 fn render_history(app: &App) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    for message in app.messages.iter().skip(app.activity_scroll) {
+    for message in &app.messages {
         let style = match message.kind {
             MessageKind::User => Style::default().fg(Color::Cyan),
             MessageKind::Warn => Style::default().fg(Color::Yellow),
