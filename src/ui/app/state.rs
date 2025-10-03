@@ -128,7 +128,38 @@ impl App {
                 outcome,
             } => {
                 self.render_plan_and_actions(&outcome.plan, &outcome.reads, &outcome.creates);
-                if batch.edits.is_empty() {
+
+                // Check if the response contains informational answers
+                if let Ok(actions) = edits::parse_actions(&outcome.response.content) {
+                    let has_answer = actions.iter().any(|action| matches!(action, edits::Action::ProvideAnswer { .. }));
+                    if has_answer {
+                        // Display answers instead of proposing edits
+                        for action in actions {
+                            match action {
+                                edits::Action::ProvideAnswer { answer } => {
+                                    self.add_message(MessageKind::Info, answer);
+                                }
+                                edits::Action::ReadFile { path } => {
+                                    self.add_message(MessageKind::Info, format!("Read file: {}", path));
+                                }
+                                edits::Action::ListDirectory { path } => {
+                                    self.add_message(MessageKind::Info, format!("Listed directory: {}", path));
+                                }
+                                edits::Action::Edit(_) => {
+                                    // Handle edits as before
+                                }
+                            }
+                        }
+                        self.add_message(MessageKind::Info, "Analysis complete.".into());
+                    } else if batch.edits.is_empty() {
+                        self.add_message(MessageKind::Info, "No edits proposed.".into());
+                    } else if let Err(err) = self.begin_review(batch) {
+                        self.add_message(
+                            MessageKind::Error,
+                            format!("Failed to prepare edits: {err}"),
+                        );
+                    }
+                } else if batch.edits.is_empty() {
                     self.add_message(MessageKind::Info, "No edits proposed.".into());
                 } else if let Err(err) = self.begin_review(batch) {
                     self.add_message(
@@ -136,6 +167,7 @@ impl App {
                         format!("Failed to prepare edits: {err}"),
                     );
                 }
+
                 self.last_usage = outcome.response.usage.clone();
                 if let Some(tokens) = outcome.response.usage.as_ref().and_then(|u| u.total_tokens) {
                     self.total_tokens_used += tokens as u64;

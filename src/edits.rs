@@ -22,13 +22,101 @@ fn default_limit() -> usize {
     1
 }
 
+#[derive(Debug, Clone)]
+pub enum Action {
+    Edit(Edit),
+    ReadFile { path: String },
+    ListDirectory { path: String },
+    ProvideAnswer { answer: String },
+}
+
+pub fn parse_actions(json_text: &str) -> Result<Vec<Action>> {
+    let tool_calls: Vec<serde_json::Value> = serde_json::from_str(json_text)
+        .context("failed to parse tool calls")?;
+
+    let actions = tool_calls
+        .into_iter()
+        .filter_map(|call| {
+            let function = call.get("function")?;
+            let name = function.get("name")?.as_str()?;
+            let args: serde_json::Value = serde_json::from_str(function.get("arguments")?.as_str()?).ok()?;
+
+            match name {
+                "read_file" => {
+                    let path = args.get("path")?.as_str()?.to_string();
+                    Some(Action::ReadFile { path })
+                }
+                "list_directory" => {
+                    let path = args.get("path").and_then(|p| p.as_str()).unwrap_or(".").to_string();
+                    Some(Action::ListDirectory { path })
+                }
+                "replace_text" => {
+                    let path = args.get("path")?.as_str()?.to_string();
+                    let anchor = args.get("anchor")?.as_str()?.to_string();
+                    let snippet = args.get("snippet")?.as_str()?.to_string();
+                    let rationale = args.get("rationale").and_then(|r| r.as_str()).map(|s| s.to_string());
+                    Some(Action::Edit(Edit {
+                        path,
+                        op: "replace".to_string(),
+                        anchor,
+                        snippet,
+                        limit: 1,
+                        rationale,
+                    }))
+                }
+                "insert_after" => {
+                    let path = args.get("path")?.as_str()?.to_string();
+                    let anchor = args.get("anchor")?.as_str()?.to_string();
+                    let snippet = args.get("snippet")?.as_str()?.to_string();
+                    let rationale = args.get("rationale").and_then(|r| r.as_str()).map(|s| s.to_string());
+                    Some(Action::Edit(Edit {
+                        path,
+                        op: "insert_after".to_string(),
+                        anchor,
+                        snippet,
+                        limit: 1,
+                        rationale,
+                    }))
+                }
+                "insert_before" => {
+                    let path = args.get("path")?.as_str()?.to_string();
+                    let anchor = args.get("anchor")?.as_str()?.to_string();
+                    let snippet = args.get("snippet")?.as_str()?.to_string();
+                    let rationale = args.get("rationale").and_then(|r| r.as_str()).map(|s| s.to_string());
+                    Some(Action::Edit(Edit {
+                        path,
+                        op: "insert_before".to_string(),
+                        anchor,
+                        snippet,
+                        limit: 1,
+                        rationale,
+                    }))
+                }
+                "provide_answer" => {
+                    let answer = args.get("answer")?.as_str()?.to_string();
+                    Some(Action::ProvideAnswer { answer })
+                }
+                _ => None,
+            }
+        })
+        .collect();
+
+    Ok(actions)
+}
+
 pub fn parse_edits(json_text: &str) -> Result<EditBatch> {
-    // try plain JSON; if model wrapped in markdown, strip code fences
-    let trimmed = json_text.trim().trim_matches('`').trim();
-    let batch: EditBatch = serde_json::from_str(trimmed)
-        .or_else(|_| serde_json::from_str(json_text))
-        .context("failed to parse edits JSON")?;
-    Ok(batch)
+    let actions = parse_actions(json_text)?;
+    let edits = actions
+        .into_iter()
+        .filter_map(|action| {
+            match action {
+                Action::Edit(edit) => Some(edit),
+                _ => None,
+            }
+        })
+        .collect();
+
+    Ok(EditBatch { edits })
 }
 
 pub fn apply_edit(original: &str, e: &Edit) -> Result<String> {

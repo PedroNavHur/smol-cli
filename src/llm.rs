@@ -8,6 +8,34 @@ use serde_json::Value;
 struct Message<'a> {
     role: &'a str,
     content: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<&'a [ToolCall]>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ToolCall {
+    pub id: String,
+    pub r#type: String, // "function"
+    pub function: ToolCallFunction,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ToolCallFunction {
+    pub name: String,
+    pub arguments: String, // JSON string
+}
+
+#[derive(Serialize)]
+struct Tool {
+    r#type: String, // "function"
+    function: ToolFunction,
+}
+
+#[derive(Serialize)]
+struct ToolFunction {
+    name: String,
+    description: String,
+    parameters: serde_json::Value, // JSON schema
 }
 
 #[derive(Serialize)]
@@ -16,6 +44,8 @@ struct ChatRequest<'a> {
     messages: Vec<Message<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<&'a [Tool]>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -26,7 +56,10 @@ pub struct Choice {
 #[derive(Deserialize, Debug, Clone)]
 pub struct AssistantMessage {
     pub role: String,
+    #[serde(default)]
     pub content: String,
+    #[serde(default)]
+    pub tool_calls: Vec<ToolCall>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -64,45 +97,161 @@ where
     })
 }
 
-const SYSTEM_PROMPT: &str = r#"You are Smol CLI, a conservative coding agent that proposes safe, minimal file edits.
-Return ONLY JSON with the schema:
-{"edits":[{"path":"...", "op":"replace|insert_after|insert_before", "anchor":"...", "snippet":"...", "limit":1, "rationale":"..."}]}
-- Use small, anchor-based changes.
-- Never return shell commands.
-- Keep edits minimal and specific."#;
+const SYSTEM_PROMPT: &str = r#"You are Smol CLI, a helpful coding assistant that can analyze codebases and propose safe, minimal file edits.
+Use the available tools to either:
+1. Propose edits when the user wants code changes
+2. Provide informational answers when the user asks questions about the codebase
+3. Explore the codebase using read_file and list_directory tools
+
+For code changes:
+- Use small, anchor-based changes with replace_text, insert_after, insert_before
+- Never return shell commands
+- Keep edits minimal and specific
+- Always provide rationale
+
+For informational queries:
+- Use provide_answer to give direct responses
+- Use read_file and list_directory to gather information first if needed
+
+Always use the appropriate tools - do not return JSON or text directly."#;
 
 const PLANNER_PROMPT: &str = r#"You are Smol CLI's planning assistant.
-Given a user request, produce a JSON object with the schema:
-{"plan":[{"description":"...", "read": "relative/path.ext" | null, "create": "relative/new_file" | null}]}
-- Break the work into 2-5 concise steps.
-- Use "read" to request file contents needed for the task (relative to repo root). Use null if reading a file is not required for that step.
-- Use "create" to ask for new files that should be created (omit or set null if no creation is needed).
-- Prefer explicit paths like "src/lib.rs" or "tests/new_test.rs".
-- Keep descriptions short and actionable.
-Respond with JSON only."#;
+Given a user request, determine if it's asking for code changes or information about the codebase.
+
+For code changes:
+- Break into 2-5 logical steps using read_file, create_file, analyze_code, search_files, list_directory
+- Focus on understanding the codebase first, then making changes
+
+For informational queries (like "tell me about this codebase"):
+- Use answer_question to plan providing a direct answer
+- May need read_file or list_directory first to gather information
+
+Be specific about file paths and provide clear reasons for each step."#;
+
+fn edit_tools() -> Vec<Tool> {
+    vec![
+        Tool {
+            r#type: "function".to_string(),
+            function: ToolFunction {
+                name: "read_file".to_string(),
+                description: "Read a specific file to understand the codebase".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Relative path to the file to read"}
+                    },
+                    "required": ["path"]
+                }),
+            },
+        },
+        Tool {
+            r#type: "function".to_string(),
+            function: ToolFunction {
+                name: "list_directory".to_string(),
+                description: "List contents of a directory".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Relative path to the directory to list", "default": "."}
+                    }
+                }),
+            },
+        },
+        Tool {
+            r#type: "function".to_string(),
+            function: ToolFunction {
+                name: "replace_text".to_string(),
+                description: "Replace text in a file using an anchor".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Relative path to the file"},
+                        "anchor": {"type": "string", "description": "Unique text to anchor the replacement"},
+                        "snippet": {"type": "string", "description": "New text to replace with"},
+                        "rationale": {"type": "string", "description": "Reason for this edit"}
+                    },
+                    "required": ["path", "anchor", "snippet"]
+                }),
+            },
+        },
+        Tool {
+            r#type: "function".to_string(),
+            function: ToolFunction {
+                name: "insert_after".to_string(),
+                description: "Insert text after an anchor in a file".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Relative path to the file"},
+                        "anchor": {"type": "string", "description": "Text to insert after"},
+                        "snippet": {"type": "string", "description": "Text to insert"},
+                        "rationale": {"type": "string", "description": "Reason for this edit"}
+                    },
+                    "required": ["path", "anchor", "snippet"]
+                }),
+            },
+        },
+        Tool {
+            r#type: "function".to_string(),
+            function: ToolFunction {
+                name: "insert_before".to_string(),
+                description: "Insert text before an anchor in a file".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Relative path to the file"},
+                        "anchor": {"type": "string", "description": "Text to insert before"},
+                        "snippet": {"type": "string", "description": "Text to insert"},
+                        "rationale": {"type": "string", "description": "Reason for this edit"}
+                    },
+                    "required": ["path", "anchor", "snippet"]
+                }),
+            },
+        },
+        Tool {
+            r#type: "function".to_string(),
+            function: ToolFunction {
+                name: "provide_answer".to_string(),
+                description: "Provide an informational answer about the codebase".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "answer": {"type": "string", "description": "The answer to provide"}
+                    },
+                    "required": ["answer"]
+                }),
+            },
+        },
+    ]
+}
 
 pub async fn propose_edits(
     cfg: &AppConfig,
     user_prompt: &str,
     context: &str,
 ) -> Result<EditResponse> {
+    let tools = edit_tools();
     let body = ChatRequest {
         model: &cfg.provider.model,
         messages: vec![
             Message {
                 role: "system",
                 content: SYSTEM_PROMPT,
+                tool_calls: None,
             },
             Message {
                 role: "user",
                 content: context,
+                tool_calls: None,
             },
             Message {
                 role: "user",
                 content: user_prompt,
+                tool_calls: None,
             },
         ],
         temperature: Some(cfg.runtime.temperature),
+        tools: Some(&tools),
     };
 
     let client = Client::new();
@@ -123,35 +272,132 @@ pub async fn propose_edits(
         .await
         .context("llm decode failed")?;
 
-    let content = resp
+    let tool_calls = resp
         .choices
         .first()
-        .map(|c| {
-            debug_assert_eq!(&c.message.role, "assistant");
-            c.message.content.clone()
-        })
+        .map(|c| c.message.tool_calls.clone())
         .unwrap_or_default();
 
+    // Return tool calls as content for now
     Ok(EditResponse {
-        content,
+        content: serde_json::to_string(&tool_calls).unwrap_or_default(),
         usage: resp.usage,
     })
 }
 
+fn plan_tools() -> Vec<Tool> {
+    vec![
+        Tool {
+            r#type: "function".to_string(),
+            function: ToolFunction {
+                name: "read_file".to_string(),
+                description: "Plan to read a specific file to understand the codebase".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Relative path to the file to read"},
+                        "reason": {"type": "string", "description": "Why this file needs to be read"}
+                    },
+                    "required": ["path", "reason"]
+                }),
+            },
+        },
+        Tool {
+            r#type: "function".to_string(),
+            function: ToolFunction {
+                name: "create_file".to_string(),
+                description: "Plan to create a new file".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Relative path for the new file"},
+                        "reason": {"type": "string", "description": "Why this file needs to be created"}
+                    },
+                    "required": ["path", "reason"]
+                }),
+            },
+        },
+        Tool {
+            r#type: "function".to_string(),
+            function: ToolFunction {
+                name: "list_directory".to_string(),
+                description: "Plan to list contents of a directory".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Relative path to the directory to list", "default": "."},
+                        "reason": {"type": "string", "description": "Why this directory needs to be listed"}
+                    },
+                    "required": ["reason"]
+                }),
+            },
+        },
+        Tool {
+            r#type: "function".to_string(),
+            function: ToolFunction {
+                name: "analyze_code".to_string(),
+                description: "Plan to analyze existing code structure".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "focus": {"type": "string", "description": "What aspect to analyze (e.g., 'main function', 'error handling')"},
+                        "reason": {"type": "string", "description": "Why this analysis is needed"}
+                    },
+                    "required": ["focus", "reason"]
+                }),
+            },
+        },
+        Tool {
+            r#type: "function".to_string(),
+            function: ToolFunction {
+                name: "search_files".to_string(),
+                description: "Plan to search for specific patterns or files".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "pattern": {"type": "string", "description": "Pattern to search for"},
+                        "reason": {"type": "string", "description": "Why this search is needed"}
+                    },
+                    "required": ["pattern", "reason"]
+                }),
+            },
+        },
+        Tool {
+            r#type: "function".to_string(),
+            function: ToolFunction {
+                name: "answer_question".to_string(),
+                description: "Plan to answer an informational question about the codebase".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "question": {"type": "string", "description": "The question to answer"},
+                        "reason": {"type": "string", "description": "Why this question needs to be answered"}
+                    },
+                    "required": ["question", "reason"]
+                }),
+            },
+        },
+    ]
+}
+
 pub async fn generate_plan(cfg: &AppConfig, user_prompt: &str) -> Result<String> {
+    let tools = plan_tools();
     let body = ChatRequest {
         model: &cfg.provider.model,
         messages: vec![
             Message {
                 role: "system",
                 content: PLANNER_PROMPT,
+                tool_calls: None,
             },
             Message {
                 role: "user",
                 content: user_prompt,
+                tool_calls: None,
             },
         ],
         temperature: Some(0.0),
+        tools: Some(&tools),
     };
 
     let client = Client::new();
@@ -172,13 +418,14 @@ pub async fn generate_plan(cfg: &AppConfig, user_prompt: &str) -> Result<String>
         .await
         .context("plan decode failed")?;
 
-    let content = resp
+    let tool_calls = resp
         .choices
         .first()
-        .map(|c| c.message.content.clone())
+        .map(|c| c.message.tool_calls.clone())
         .unwrap_or_default();
 
-    Ok(content)
+    // For now, return as JSON string for compatibility
+    Ok(serde_json::to_string(&tool_calls).unwrap_or_default())
 }
 
 #[derive(Debug, Clone)]

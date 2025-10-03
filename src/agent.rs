@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use serde::Deserialize;
+
 use tracing::debug;
 
 use crate::{config, fsutil, llm};
@@ -70,6 +70,9 @@ pub async fn run(
             fallback_plan(user_prompt)
         }
     };
+
+    // Check if this is an informational query
+    let is_informational = plan_steps.iter().any(|step| step.description.contains("Answer"));
 
     let mut reads = Vec::new();
     let mut creates = Vec::new();
@@ -149,7 +152,13 @@ pub async fn run(
         }
     }
 
-    let response = llm::propose_edits(cfg, user_prompt, &base_context).await?;
+    let response = if is_informational {
+        // For informational queries, use the edit tools to potentially provide answers
+        llm::propose_edits(cfg, user_prompt, &base_context).await?
+    } else {
+        // For code changes, proceed as normal
+        llm::propose_edits(cfg, user_prompt, &base_context).await?
+    };
 
     Ok(AgentOutcome {
         plan: plan_steps,
@@ -184,40 +193,70 @@ fn create_file(repo_root: &Path, rel: &str) -> Result<bool> {
 }
 
 fn parse_plan(content: &str) -> Option<Vec<PlanStep>> {
-    #[derive(Deserialize)]
-    struct RawPlan {
-        plan: Vec<RawStep>,
-    }
-
-    #[derive(Deserialize)]
-    struct RawStep {
-        description: String,
-        #[serde(default)]
-        read: Option<String>,
-        #[serde(default)]
-        create: Option<String>,
-    }
-
-    let parsed: RawPlan = serde_json::from_str(content).ok()?;
-    let steps = parsed
-        .plan
+    let tool_calls: Vec<serde_json::Value> = serde_json::from_str(content).ok()?;
+    let steps = tool_calls
         .into_iter()
-        .filter_map(|step| {
-            let desc = step.description.trim();
-            if desc.is_empty() {
-                None
-            } else {
-                Some(PlanStep {
-                    description: desc.to_string(),
-                    read: step
-                        .read
-                        .map(|r| r.trim().to_string())
-                        .filter(|s| !s.is_empty()),
-                    create: step
-                        .create
-                        .map(|c| c.trim().to_string())
-                        .filter(|s| !s.is_empty()),
-                })
+        .filter_map(|call| {
+            let function = call.get("function")?;
+            let name = function.get("name")?.as_str()?;
+            let args: serde_json::Value = serde_json::from_str(function.get("arguments")?.as_str()?).ok()?;
+
+            match name {
+                "read_file" => {
+                    let path = args.get("path")?.as_str()?;
+                    let reason = args.get("reason")?.as_str()?;
+                    Some(PlanStep {
+                        description: format!("Read {}: {}", path, reason),
+                        read: Some(path.to_string()),
+                        create: None,
+                    })
+                }
+                "create_file" => {
+                    let path = args.get("path")?.as_str()?;
+                    let reason = args.get("reason")?.as_str()?;
+                    Some(PlanStep {
+                        description: format!("Create {}: {}", path, reason),
+                        read: None,
+                        create: Some(path.to_string()),
+                    })
+                }
+                "list_directory" => {
+                    let path = args.get("path").and_then(|p| p.as_str()).unwrap_or(".");
+                    let reason = args.get("reason")?.as_str()?;
+                    Some(PlanStep {
+                        description: format!("List directory {}: {}", path, reason),
+                        read: None,
+                        create: None,
+                    })
+                }
+                "analyze_code" => {
+                    let focus = args.get("focus")?.as_str()?;
+                    let reason = args.get("reason")?.as_str()?;
+                    Some(PlanStep {
+                        description: format!("Analyze {}: {}", focus, reason),
+                        read: None,
+                        create: None,
+                    })
+                }
+                "search_files" => {
+                    let pattern = args.get("pattern")?.as_str()?;
+                    let reason = args.get("reason")?.as_str()?;
+                    Some(PlanStep {
+                        description: format!("Search for {}: {}", pattern, reason),
+                        read: None,
+                        create: None,
+                    })
+                }
+                "answer_question" => {
+                    let question = args.get("question")?.as_str()?;
+                    let reason = args.get("reason")?.as_str()?;
+                    Some(PlanStep {
+                        description: format!("Answer '{}': {}", question, reason),
+                        read: None,
+                        create: None,
+                    })
+                }
+                _ => None,
             }
         })
         .collect::<Vec<_>>();
