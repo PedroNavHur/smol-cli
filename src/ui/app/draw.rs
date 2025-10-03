@@ -137,6 +137,8 @@ fn draw_status(app: &App, frame: &mut Frame, area: Rect) {
         Span::raw(" send   "),
         Span::styled("⇧/⌥/⌃⏎", icon_style),
         Span::raw(" newline   "),
+        Span::styled("⌃U/D", icon_style),
+        Span::raw(" scroll   "),
         Span::styled("⌃C", icon_style),
         Span::raw(" quit   "),
     ];
@@ -182,6 +184,13 @@ fn draw_status(app: &App, frame: &mut Frame, area: Rect) {
         Style::default().fg(Color::Yellow),
     ));
 
+    // Add scroll indicator
+    if app.messages.len() > 0 {
+        let total = app.messages.len();
+        let current = app.activity_scroll + 1;
+        second_line_spans.push(Span::raw(format!("   {}/{}", current.min(total), total)));
+    }
+
     let lines = vec![
         Line::from(first_line_spans),
         Line::from(second_line_spans),
@@ -195,6 +204,7 @@ fn draw_status(app: &App, frame: &mut Frame, area: Rect) {
 fn render_history(app: &App) -> Vec<Line<'static>> {
     app.messages
         .iter()
+        .skip(app.activity_scroll)
         .map(|m| {
             let style = match m.kind {
                 MessageKind::User => Style::default().fg(Color::Cyan),

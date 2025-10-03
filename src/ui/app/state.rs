@@ -27,6 +27,7 @@ pub struct App {
     pub(super) textarea: TextArea<'static>,
     pub(super) messages: Vec<Message>,
     pub(super) view_offset: (u16, u16),
+    pub(super) activity_scroll: usize,
     pub(super) history: Vec<String>,
     pub(super) awaiting_response: bool,
     pub(super) review: Option<ReviewState>,
@@ -54,6 +55,7 @@ impl App {
             textarea: build_textarea(),
             messages: Vec::new(),
             view_offset: (0, 0),
+            activity_scroll: 0,
             history: Vec::new(),
             awaiting_response: false,
             review: None,
@@ -263,9 +265,17 @@ impl App {
     }
 
     pub(super) fn add_message(&mut self, kind: MessageKind, content: String) {
+        let was_at_bottom = self.activity_scroll >= self.messages.len().saturating_sub(1);
         self.messages.push(Message { kind, content });
         if self.messages.len() > 200 {
-            self.messages.drain(0..self.messages.len() - 200);
+            let removed = self.messages.len() - 200;
+            self.messages.drain(0..removed);
+            // Adjust scroll position
+            self.activity_scroll = self.activity_scroll.saturating_sub(removed);
+        }
+        // Auto-scroll to bottom if user was already at bottom
+        if was_at_bottom {
+            self.activity_scroll = self.messages.len().saturating_sub(1);
         }
     }
 

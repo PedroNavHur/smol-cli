@@ -99,6 +99,43 @@ pub(super) async fn on_key(app: &mut App, key: KeyEvent) -> Result<()> {
         return Ok(());
     }
 
+    // Handle activity scrolling
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        match key.code {
+            KeyCode::Char('u') | KeyCode::Up => {
+                if app.activity_scroll > 0 {
+                    app.activity_scroll = app.activity_scroll.saturating_sub(1);
+                }
+                return Ok(());
+            }
+            KeyCode::Char('d') | KeyCode::Down => {
+                let max_scroll = app.messages.len().saturating_sub(1);
+                if app.activity_scroll < max_scroll {
+                    app.activity_scroll = app.activity_scroll.saturating_add(1);
+                }
+                return Ok(());
+            }
+            KeyCode::Char('b') | KeyCode::PageUp => {
+                app.activity_scroll = app.activity_scroll.saturating_sub(10);
+                return Ok(());
+            }
+            KeyCode::Char('f') | KeyCode::PageDown => {
+                let max_scroll = app.messages.len().saturating_sub(1);
+                app.activity_scroll = (app.activity_scroll + 10).min(max_scroll);
+                return Ok(());
+            }
+            KeyCode::Home => {
+                app.activity_scroll = 0;
+                return Ok(());
+            }
+            KeyCode::End => {
+                app.activity_scroll = app.messages.len().saturating_sub(1);
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+
     if key.code == KeyCode::Enter && key.modifiers.is_empty() {
         app.submit_prompt().await?;
         return Ok(());
