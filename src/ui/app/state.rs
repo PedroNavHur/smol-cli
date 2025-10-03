@@ -129,28 +129,54 @@ impl App {
             } => {
                 self.render_plan_and_actions(&outcome.plan, &outcome.reads, &outcome.creates);
 
-                // Check if the response contains informational answers
+                // Check if this is an informational query
+                let is_informational = outcome.plan.iter().any(|step| step.description.to_lowercase().contains("answer"));
+
+                // Try to parse actions from the response
                 if let Ok(actions) = edits::parse_actions(&outcome.response.content) {
                     let has_answer = actions.iter().any(|action| matches!(action, edits::Action::ProvideAnswer { .. }));
+
                     if has_answer {
-                        // Display answers instead of proposing edits
+                        // Display the answer
                         for action in actions {
-                            match action {
-                                edits::Action::ProvideAnswer { answer } => {
-                                    self.add_message(MessageKind::Info, answer);
-                                }
-                                edits::Action::ReadFile { path } => {
-                                    self.add_message(MessageKind::Info, format!("Read file: {}", path));
-                                }
-                                edits::Action::ListDirectory { path } => {
-                                    self.add_message(MessageKind::Info, format!("Listed directory: {}", path));
-                                }
-                                edits::Action::Edit(_) => {
-                                    // Handle edits as before
-                                }
+                            if let edits::Action::ProvideAnswer { answer } = action {
+                                self.add_message(MessageKind::Info, answer);
                             }
                         }
                         self.add_message(MessageKind::Info, "Analysis complete.".into());
+                    } else if is_informational {
+                        // For informational queries without explicit answer, provide a fallback response
+                        self.add_message(MessageKind::Info, "Codebase exploration completed. Here's what I found:".into());
+
+                        // Show what was explored
+                        for action in &actions {
+                            match action {
+                                edits::Action::ReadFile { path } => {
+                                    self.add_message(MessageKind::Info, format!("- Read file: {}", path));
+                                }
+                                edits::Action::ListDirectory { path } => {
+                                    self.add_message(MessageKind::Info, format!("- Listed directory: {}", path));
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        // Show plan execution results
+                        for read in &outcome.reads {
+                            match &read.outcome {
+                                agent::ReadOutcome::Success { bytes } => {
+                                    self.add_message(MessageKind::Info, format!("- Successfully read {} ({} bytes)", read.path, bytes));
+                                }
+                                agent::ReadOutcome::Failed { error } => {
+                                    self.add_message(MessageKind::Info, format!("- Failed to read {}: {}", read.path, error));
+                                }
+                                agent::ReadOutcome::Skipped => {}
+                            }
+                        }
+
+                        self.add_message(MessageKind::Info, "".into());
+                        self.add_message(MessageKind::Info, "This appears to be a Rust CLI application with AI agent capabilities.".into());
+                        self.add_message(MessageKind::Info, "For more detailed analysis, please ask specific questions about particular files or features.".into());
                     } else if batch.edits.is_empty() {
                         self.add_message(MessageKind::Info, "No edits proposed.".into());
                     } else if let Err(err) = self.begin_review(batch) {

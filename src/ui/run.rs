@@ -22,7 +22,7 @@ pub async fn run(model_override: Option<String>) -> Result<()> {
         cfg.provider.model = model;
     }
 
-    let repo_root: PathBuf = std::env::current_dir()?;
+    let repo_root: PathBuf = std::fs::canonicalize(std::env::current_dir()?)?;
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();

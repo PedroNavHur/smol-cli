@@ -72,7 +72,7 @@ pub async fn run(
     };
 
     // Check if this is an informational query
-    let is_informational = plan_steps.iter().any(|step| step.description.contains("Answer"));
+    let is_informational = plan_steps.iter().any(|step| step.description.to_lowercase().contains("answer"));
 
     let mut reads = Vec::new();
     let mut creates = Vec::new();
@@ -141,6 +141,7 @@ pub async fn run(
                     });
                 }
                 Err(err) => {
+                    base_context.push_str(&format!("\n\n# File: {} (ERROR: {})\n", path, err));
                     reads.push(ReadLog {
                         path: path.to_string(),
                         outcome: ReadOutcome::Failed {
@@ -150,11 +151,29 @@ pub async fn run(
                 }
             }
         }
+
+        // Handle list_directory steps
+        if step.description.contains("List directory") {
+            if let Some(path_start) = step.description.find("List directory ") {
+                let path_part = &step.description[path_start + "List directory ".len()..];
+                if let Some(colon_pos) = path_part.find(':') {
+                    let path = path_part[..colon_pos].trim();
+                    match list_directory(repo_root, path) {
+                        Ok(contents) => {
+                            base_context.push_str(&format!("\n\n# Directory listing: {}\n{}", path, contents));
+                        }
+                        Err(err) => {
+                            base_context.push_str(&format!("\n\n# Directory: {} (error: {})\n", path, err));
+                        }
+                    }
+                }
+            }
+        }
     }
 
     let response = if is_informational {
-        // For informational queries, use the edit tools to potentially provide answers
-        llm::propose_edits(cfg, user_prompt, &base_context).await?
+        // For informational queries, use the information tools
+        llm::provide_information(cfg, user_prompt, &base_context).await?
     } else {
         // For code changes, proceed as normal
         llm::propose_edits(cfg, user_prompt, &base_context).await?
@@ -170,6 +189,34 @@ pub async fn run(
 
 fn read_file(repo_root: &Path, rel: &str) -> Result<(PathBuf, String)> {
     let rel_path = Path::new(rel);
+
+    // First try the normal path
+    if let Ok(abs) = fsutil::ensure_inside_repo(repo_root, rel_path) {
+        if abs.exists() {
+            let contents = fs::read_to_string(&abs)
+                .with_context(|| format!("failed to read {}", abs.display()))?;
+            return Ok((abs, contents));
+        }
+    }
+
+    // If that fails, try relative to current directory (for robustness)
+    if let Ok(abs) = std::fs::canonicalize(rel_path) {
+        if abs.exists() && abs.starts_with(repo_root) {
+            let contents = fs::read_to_string(&abs)
+                .with_context(|| format!("failed to read {}", abs.display()))?;
+            return Ok((abs, contents));
+        }
+    }
+
+    // Try from repo_root directly
+    let abs = repo_root.join(rel_path);
+    if abs.exists() {
+        let contents = fs::read_to_string(&abs)
+            .with_context(|| format!("failed to read {}", abs.display()))?;
+        return Ok((abs, contents));
+    }
+
+    // If all else fails, use the original method to get a proper error
     let abs = fsutil::ensure_inside_repo(repo_root, rel_path)
         .with_context(|| format!("invalid path {rel}"))?;
     let contents =
@@ -190,6 +237,26 @@ fn create_file(repo_root: &Path, rel: &str) -> Result<bool> {
     }
     fs::write(&abs, b"").with_context(|| format!("failed to create file {}", abs.display()))?;
     Ok(true)
+}
+
+fn list_directory(repo_root: &Path, rel: &str) -> Result<String> {
+    let rel_path = Path::new(rel);
+    let abs = if rel.is_empty() || rel == "." {
+        repo_root.to_path_buf()
+    } else {
+        fsutil::ensure_inside_repo(repo_root, rel_path)
+            .with_context(|| format!("invalid path {rel}"))?
+    };
+
+    let mut contents = Vec::new();
+    for entry in fs::read_dir(&abs).with_context(|| format!("failed to read directory {}", abs.display()))? {
+        let entry = entry?;
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        let file_type = if entry.file_type()?.is_dir() { "directory" } else { "file" };
+        contents.push(format!("{} ({})", file_name, file_type));
+    }
+    contents.sort();
+    Ok(contents.join("\n"))
 }
 
 fn parse_plan(content: &str) -> Option<Vec<PlanStep>> {

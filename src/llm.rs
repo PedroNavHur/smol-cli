@@ -115,6 +115,17 @@ For informational queries:
 
 Always use the appropriate tools - do not return JSON or text directly."#;
 
+const INFO_SYSTEM_PROMPT: &str = r#"You are Smol CLI, answering questions about codebases.
+
+Context has been gathered from exploring the codebase. Now provide a helpful answer to: {user_question}
+
+MANDATORY: Use ONLY the provide_answer tool for your response. Never output text directly.
+
+Tools:
+- provide_answer: Your response (MUST USE THIS)
+
+Do not use other tools unless absolutely necessary. Always provide_answer with your complete answer."#;
+
 const PLANNER_PROMPT: &str = r#"You are Smol CLI's planning assistant.
 Given a user request, determine if it's asking for code changes or information about the codebase.
 
@@ -123,9 +134,11 @@ For code changes:
 - Focus on understanding the codebase first, then making changes
 
 For informational queries (like "tell me about this codebase"):
-- Use answer_question to plan providing a direct answer
-- May need read_file or list_directory first to gather information
+- Start with list_directory to see the project structure
+- Then read important files like README.md, main source files, or configuration files
+- Use answer_question as the final step to provide the answer
 
+Common files to check: README.md, main.rs, lib.rs, Cargo.toml, package.json, etc.
 Be specific about file paths and provide clear reasons for each step."#;
 
 fn edit_tools() -> Vec<Tool> {
@@ -223,6 +236,63 @@ fn edit_tools() -> Vec<Tool> {
             },
         },
     ]
+}
+
+pub async fn provide_information(
+    cfg: &AppConfig,
+    user_prompt: &str,
+    context: &str,
+) -> Result<EditResponse> {
+    let tools = edit_tools();
+    let system_prompt = INFO_SYSTEM_PROMPT.replace("{user_question}", user_prompt);
+    let context_message = format!("Gathered context:\n{}", context);
+    let body = ChatRequest {
+        model: &cfg.provider.model,
+        messages: vec![
+            Message {
+                role: "system",
+                content: &system_prompt,
+                tool_calls: None,
+            },
+            Message {
+                role: "user",
+                content: &context_message,
+                tool_calls: None,
+            },
+        ],
+        temperature: Some(cfg.runtime.temperature),
+        tools: Some(&tools),
+    };
+
+    let client = Client::new();
+    let url = format!(
+        "{}/chat/completions",
+        cfg.provider.base_url.trim_end_matches('/')
+    );
+    let resp: ChatResponse = client
+        .post(url)
+        .bearer_auth(&cfg.auth.api_key)
+        .json(&body)
+        .send()
+        .await
+        .context("llm request failed")?
+        .error_for_status()
+        .context("llm non-200")?
+        .json()
+        .await
+        .context("llm decode failed")?;
+
+    let tool_calls = resp
+        .choices
+        .first()
+        .map(|c| c.message.tool_calls.clone())
+        .unwrap_or_default();
+
+    // Return tool calls as content for now
+    Ok(EditResponse {
+        content: serde_json::to_string(&tool_calls).unwrap_or_default(),
+        usage: resp.usage,
+    })
 }
 
 pub async fn propose_edits(
