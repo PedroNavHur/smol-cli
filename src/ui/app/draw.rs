@@ -17,36 +17,74 @@ use crate::ui::{
 
 pub(super) fn draw(app: &mut App, frame: &mut Frame) {
     let prompt_lines = app.textarea.lines().len().max(1).min(10) as u16;
+    let has_plan = app.current_plan.is_some();
+    let has_actions = app.messages.iter().any(|m| m.kind == MessageKind::Tool);
+    let constraints = match (has_plan, has_actions) {
+        (true, true) => vec![
+            Constraint::Length(3),
+            Constraint::Length(5),
+            Constraint::Length(3),
+            Constraint::Min(10),
+            Constraint::Length(prompt_lines + 2),
+            Constraint::Length(2),
+        ],
+        (true, false) => vec![
+            Constraint::Length(3),
+            Constraint::Length(5),
+            Constraint::Min(10),
+            Constraint::Length(prompt_lines + 2),
+            Constraint::Length(2),
+        ],
+        (false, true) => vec![
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Min(10),
+            Constraint::Length(prompt_lines + 2),
+            Constraint::Length(2),
+        ],
+        (false, false) => vec![
+            Constraint::Length(3),
+            Constraint::Min(10),
+            Constraint::Length(prompt_lines + 2),
+            Constraint::Length(2),
+        ],
+    };
     let layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(
-            [
-                Constraint::Length(3),
-                Constraint::Min(10),
-                Constraint::Length(prompt_lines + 2),
-                Constraint::Length(2),
-            ]
-            .as_ref(),
-        )
+        .constraints(&constraints)
         .split(frame.area());
 
-    draw_banner(frame, layout[0]);
+    let mut layout_idx = 0;
+    draw_banner(frame, layout[layout_idx]);
+    layout_idx += 1;
 
-    let history = render_history(app);
+    if has_plan {
+        render_plan(app, frame, layout[layout_idx]);
+        layout_idx += 1;
+    }
+    if has_actions {
+        render_actions(app, frame, layout[layout_idx]);
+        layout_idx += 1;
+    }
+
+    let history_layout_idx = layout_idx;
     let (history_area, picker_area) = if app.review.is_none() {
         if let (Some(models), Some(picker)) = (&app.models, &app.model_picker) {
             let picker_height = picker_height(models);
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Min(3), Constraint::Length(picker_height.max(3))])
-                .split(layout[1]);
+                .split(layout[history_layout_idx]);
             (chunks[0], Some((chunks[1], picker.index)))
         } else {
-            (layout[1], None)
+            (layout[history_layout_idx], None)
         }
     } else {
-        (layout[1], None)
+        (layout[history_layout_idx], None)
     };
+    layout_idx += 1;
+
+    let history = render_history(app, history_area.width as usize);
 
     // Calculate how many messages can fit
     let messages_per_screen = (history_area.height / 2).max(1) as usize;
@@ -71,14 +109,15 @@ pub(super) fn draw(app: &mut App, frame: &mut Frame) {
 
     if let Some(review) = &app.review {
         let review_block = render_review(review);
-        frame.render_widget(review_block, layout[1]);
+        frame.render_widget(review_block, history_area);
     } else if let (Some((area, selected)), Some(models)) = (picker_area, app.models.as_ref()) {
         let picker_block = render_model_picker(models, selected);
         frame.render_widget(picker_block, area);
     }
 
-    prompt::draw_prompt(app, frame, layout[2]);
-    draw_status(app, frame, layout[3]);
+    prompt::draw_prompt(app, frame, layout[layout_idx]);
+    layout_idx += 1;
+    draw_status(app, frame, layout[layout_idx]);
 }
 
 fn draw_banner(frame: &mut Frame, area: Rect) {
@@ -212,50 +251,117 @@ fn draw_status(app: &App, frame: &mut Frame, area: Rect) {
     frame.render_widget(paragraph, area);
 }
 
-fn render_history(app: &App) -> Vec<Line<'static>> {
+fn render_plan(app: &App, frame: &mut Frame, area: Rect) {
+    let mut lines = Vec::new();
+    if let Some(plan) = &app.current_plan {
+        lines.push(Line::from(Span::styled("Plan:", Style::default().fg(Color::Gray))));
+        for (idx, step) in plan.iter().enumerate() {
+            let checkbox = if app.completed_steps.get(idx).copied().unwrap_or(false) {
+                "✓"
+            } else {
+                "□"
+            };
+            let mut annotations = Vec::new();
+            if let Some(path) = &step.read {
+                annotations.push(format!("read {}", path));
+            }
+            if let Some(path) = &step.create {
+                annotations.push(format!("create {}", path));
+            }
+            let content = if annotations.is_empty() {
+                format!("  {} {}. {}", checkbox, idx + 1, step.description)
+            } else {
+                format!(
+                    "  {} {}. {} [{}]",
+                    checkbox,
+                    idx + 1,
+                    step.description,
+                    annotations.join(", ")
+                )
+            };
+            lines.push(Line::from(Span::styled(content, Style::default().fg(Color::Gray))));
+        }
+    }
+    let plan_block = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(UI_BORDER_TYPE)
+                .style(Style::default().bg(Color::Black))
+                .title("Plan"),
+        )
+        .wrap(Wrap { trim: false });
+    frame.render_widget(plan_block, area);
+}
+
+fn render_actions(app: &App, frame: &mut Frame, area: Rect) {
     let mut lines = Vec::new();
     for message in &app.messages {
-        let style = match message.kind {
-            MessageKind::User => Style::default().fg(Color::Cyan),
-            MessageKind::Warn => Style::default().fg(Color::Yellow),
-            MessageKind::Error => Style::default().fg(Color::Red),
-            MessageKind::Info => Style::default().fg(Color::Gray),
-            MessageKind::Tool => Style::default().fg(Color::DarkGray),
-        };
-        let spans = parse_message(&message.content, style);
-        lines.push(Line::from(spans));
-        lines.push(Line::from(Span::raw(""))); // Add empty line between messages
+        if message.kind == MessageKind::Tool {
+            let style = match message.kind {
+                MessageKind::User => Style::default().fg(Color::Cyan),
+                MessageKind::Warn => Style::default().fg(Color::Yellow),
+                MessageKind::Error => Style::default().fg(Color::Red),
+                MessageKind::Info => Style::default().fg(Color::Gray),
+                MessageKind::Tool => Style::default().fg(Color::DarkGray),
+            };
+            let spans = parse_message(&message.content, style, area.width as usize);
+            lines.push(Line::from(spans));
+        }
+    }
+    let actions_block = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(UI_BORDER_TYPE)
+                .style(Style::default().bg(Color::Rgb(50, 50, 50)))
+                .title("Actions"),
+        )
+        .wrap(Wrap { trim: false });
+    frame.render_widget(actions_block, area);
+}
+
+fn render_history(app: &App, width: usize) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    for message in &app.messages {
+        if message.kind != MessageKind::Tool {
+            let style = match message.kind {
+                MessageKind::User => Style::default().fg(Color::Cyan),
+                MessageKind::Warn => Style::default().fg(Color::Yellow),
+                MessageKind::Error => Style::default().fg(Color::Red),
+                MessageKind::Info => Style::default().fg(Color::Gray),
+                MessageKind::Tool => Style::default().fg(Color::DarkGray),
+            };
+            let spans = parse_message(&message.content, style, width);
+            lines.push(Line::from(spans));
+            lines.push(Line::from(Span::raw(""))); // Add empty line between messages
+        }
     }
     lines
 }
 
-fn parse_message(content: &str, base_style: Style) -> Vec<Span<'static>> {
-    let style = if content.contains("Plan:") {
-        base_style.bg(Color::Rgb(30, 30, 30))
-    } else {
-        base_style
-    };
+fn parse_message(content: &str, base_style: Style, _width: usize) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     let mut remaining = content;
     while let Some(start) = remaining.find("[highlight]") {
         if start > 0 {
-            spans.push(Span::styled(remaining[..start].to_string(), style));
+            spans.push(Span::styled(remaining[..start].to_string(), base_style));
         }
         remaining = &remaining[start + 11..]; // len("[highlight]")
         if let Some(end) = remaining.find("[/highlight]") {
             spans.push(Span::styled(
                 remaining[..end].to_string(),
-                style.fg(Color::Cyan),
+                base_style.fg(Color::Cyan),
             ));
             remaining = &remaining[end + 12..]; // len("[/highlight]")
         } else {
             // malformed, add rest
-            spans.push(Span::styled(remaining.to_string(), style));
+            spans.push(Span::styled(remaining.to_string(), base_style));
             break;
         }
     }
     if !remaining.is_empty() {
-        spans.push(Span::styled(remaining.to_string(), style));
+        spans.push(Span::styled(remaining.to_string(), base_style));
     }
     spans
 }

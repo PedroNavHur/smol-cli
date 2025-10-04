@@ -29,6 +29,7 @@ pub struct App {
     pub(super) view_offset: (u16, u16),
     pub(super) activity_scroll: usize,
     pub(super) completed_steps: Vec<bool>,
+    pub(super) current_plan: Option<Vec<agent::PlanStep>>,
     pub(super) history: Vec<String>,
     pub(super) awaiting_response: bool,
     pub(super) review: Option<ReviewState>,
@@ -58,6 +59,7 @@ impl App {
             view_offset: (0, 0),
             activity_scroll: 0,
             completed_steps: Vec::new(),
+            current_plan: None,
             history: Vec::new(),
             awaiting_response: false,
             review: None,
@@ -112,7 +114,10 @@ impl App {
                 prompt,
                 outcome,
             } => {
-                self.render_plan_and_actions(&outcome.plan, &outcome.reads, &outcome.creates);
+                if !outcome.plan.is_empty() {
+                    self.completed_steps = vec![false; outcome.plan.len()];
+                    self.current_plan = Some(outcome.plan.clone());
+                }
                 self.add_message(
                     MessageKind::Error,
                     format!("Model did not return valid edits: {error}"),
@@ -122,6 +127,14 @@ impl App {
                 if let Some(tokens) = outcome.response.usage.as_ref().and_then(|u| u.total_tokens) {
                     self.total_tokens_used += tokens as u64;
                 }
+                self.push_memory_entry(agent::summarize_turn(&prompt, &outcome));
+                for log in &outcome.reads {
+                    self.add_message(MessageKind::Tool, format!("- Read file: {}", log.path));
+                }
+                for log in &outcome.creates {
+                    self.add_message(MessageKind::Tool, format!("- Create file: {}", log.path));
+                }
+                self.completed_steps = vec![true; self.completed_steps.len()];
                 let mut summary = agent::summarize_turn(&prompt, &outcome);
                 summary.push_str("\nParse error.");
                 self.push_memory_entry(summary);
@@ -131,10 +144,10 @@ impl App {
                 batch,
                 outcome,
             } => {
-                self.render_plan_and_actions(&outcome.plan, &outcome.reads, &outcome.creates);
-
-                // Check if this is an informational query
-                let is_informational = outcome.plan.iter().any(|step| step.description.to_lowercase().contains("answer"));
+                if !outcome.plan.is_empty() {
+                    self.completed_steps = vec![false; outcome.plan.len()];
+                    self.current_plan = Some(outcome.plan.clone());
+                }
 
                 // Try to parse actions from the response
                 if let Ok(actions) = edits::parse_actions(&outcome.response.content) {
@@ -142,60 +155,24 @@ impl App {
 
                     if has_answer {
                         // Display the answer
-                        for action in actions {
-                            if let edits::Action::ProvideAnswer { answer } = action {
-                                self.add_message(MessageKind::Info, answer);
-                            }
+                        let answers = actions.iter().filter_map(|action| if let edits::Action::ProvideAnswer { answer } = action { Some(answer.clone()) } else { None }).collect::<Vec<_>>();
+                        for answer in answers {
+                            self.add_message(MessageKind::Info, answer);
                         }
                         self.add_message(MessageKind::Tool, "Analysis complete.".into());
-                    } else if is_informational {
-                        // For informational queries without explicit answer, provide a fallback response
-                        self.add_message(MessageKind::Info, "Codebase exploration completed. Here's what I found:".into());
-
-                        // Show what was explored
-                        for action in &actions {
-                            match action {
-                                edits::Action::ReadFile { path } => {
-                                    self.add_message(MessageKind::Tool, format!("- Read file: {}", path));
-                                }
-                                edits::Action::ListDirectory { path } => {
-                                    self.add_message(MessageKind::Tool, format!("- Listed directory: {}", path));
-                                }
-                                _ => {}
-                            }
+                    } else {
+                        if batch.edits.is_empty() {
+                            self.add_message(MessageKind::Info, "No edits proposed.".into());
+                        } else if let Err(err) = self.begin_review(batch) {
+                            self.add_message(MessageKind::Error, format!("Failed to prepare edits: {err}"));
                         }
-
-                        // Show plan execution results
-                        for read in &outcome.reads {
-                            match &read.outcome {
-                                agent::ReadOutcome::Success { bytes } => {
-                                    self.add_message(MessageKind::Info, format!("- Successfully read {} ({} bytes)", read.path, bytes));
-                                }
-                                agent::ReadOutcome::Failed { error } => {
-                                    self.add_message(MessageKind::Info, format!("- Failed to read {}: {}", read.path, error));
-                                }
-                                agent::ReadOutcome::Skipped => {}
-                            }
-                        }
-
-                        self.add_message(MessageKind::Info, "".into());
-                        self.add_message(MessageKind::Info, "This appears to be a Rust CLI application with AI agent capabilities.".into());
-                        self.add_message(MessageKind::Info, "For more detailed analysis, please ask specific questions about particular files or features.".into());
-                    } else if batch.edits.is_empty() {
+                    }
+                } else {
+                    if batch.edits.is_empty() {
                         self.add_message(MessageKind::Info, "No edits proposed.".into());
                     } else if let Err(err) = self.begin_review(batch) {
-                        self.add_message(
-                            MessageKind::Error,
-                            format!("Failed to prepare edits: {err}"),
-                        );
+                        self.add_message(MessageKind::Error, format!("Failed to prepare edits: {err}"));
                     }
-                } else if batch.edits.is_empty() {
-                    self.add_message(MessageKind::Info, "No edits proposed.".into());
-                } else if let Err(err) = self.begin_review(batch) {
-                    self.add_message(
-                        MessageKind::Error,
-                        format!("Failed to prepare edits: {err}"),
-                    );
                 }
 
                 self.last_usage = outcome.response.usage.clone();
@@ -203,104 +180,15 @@ impl App {
                     self.total_tokens_used += tokens as u64;
                 }
                 self.push_memory_entry(agent::summarize_turn(&prompt, &outcome));
+
+                for log in &outcome.reads {
+                    self.add_message(MessageKind::Tool, format!("- Read file: {}", log.path));
+                }
+                for log in &outcome.creates {
+                    self.add_message(MessageKind::Tool, format!("- Create file: {}", log.path));
+                }
+                self.completed_steps = vec![true; self.completed_steps.len()];
             }
-        }
-    }
-
-    fn render_plan_and_actions(
-        &mut self,
-        plan: &[agent::PlanStep],
-        reads: &[agent::ReadLog],
-        creates: &[agent::CreateLog],
-    ) {
-        if !plan.is_empty() {
-            // Reset completed_steps for new plan
-            self.completed_steps = vec![false; plan.len()];
-
-            self.add_message(MessageKind::Info, "Plan:".into());
-            for (idx, step) in plan.iter().enumerate() {
-                let checkbox = if self.completed_steps.get(idx).copied().unwrap_or(false) {
-                    "✓"
-                } else {
-                    "□"
-                };
-
-                let mut annotations = Vec::new();
-                if let Some(path) = &step.read {
-                    annotations.push(format!("read {}", path));
-                }
-                if let Some(path) = &step.create {
-                    annotations.push(format!("create {}", path));
-                }
-                if annotations.is_empty() {
-                    self.add_message(
-                        MessageKind::Info,
-                        format!("  {} {}. {}", checkbox, idx + 1, step.description),
-                    );
-                } else {
-                    self.add_message(
-                        MessageKind::Info,
-                        format!(
-                            "  {} {}. {} [{}]",
-                            checkbox,
-                            idx + 1,
-                            step.description,
-                            annotations.join(", ")
-                        ),
-                    );
-                }
-            }
-        }
-
-        // Update completed steps based on reads and creates
-        for log in reads {
-            if let agent::ReadOutcome::Success { .. } = &log.outcome {
-                // Mark read steps as completed
-                for (idx, step) in plan.iter().enumerate() {
-                    if let Some(read_path) = &step.read {
-                        if log.path == *read_path {
-                            if let Some(completed) = self.completed_steps.get_mut(idx) {
-                                *completed = true;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        for log in creates {
-            if let agent::CreateOutcome::Created = &log.outcome {
-                // Mark create steps as completed
-                for (idx, step) in plan.iter().enumerate() {
-                    if let Some(create_path) = &step.create {
-                        if log.path == *create_path {
-                            if let Some(completed) = self.completed_steps.get_mut(idx) {
-                                *completed = true;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Mark list_directory steps as completed
-        for (idx, step) in plan.iter().enumerate() {
-            if step.description.contains("List directory") && !self.completed_steps.get(idx).copied().unwrap_or(false) {
-                // Check if we've done any directory listing
-                if !reads.is_empty() || !creates.is_empty() {
-                    if let Some(completed) = self.completed_steps.get_mut(idx) {
-                        *completed = true;
-                    }
-                }
-            }
-        }
-
-        for log in reads {
-            self.add_message(MessageKind::Info, agent::format_read_log(log));
-        }
-
-        for log in creates {
-            self.add_message(MessageKind::Info, agent::format_create_log(log));
         }
     }
 
@@ -445,12 +333,12 @@ pub(super) struct Message {
     pub(super) content: String,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub(super) enum MessageKind {
     User,
-    Info,
     Warn,
     Error,
+    Info,
     Tool,
 }
 
