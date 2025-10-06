@@ -241,25 +241,16 @@ pub async fn provide_information(
         .choices
         .first()
         .ok_or_else(|| anyhow::anyhow!("no choices"))?;
-    let content = choice.message.content.clone();
+    let message = choice.message.clone();
 
-    // Parse as answer tool call
-    if let Ok(tool_call) = serde_json::from_str::<serde_json::Value>(&content) {
-        if let Some(name) = tool_call.get("name").and_then(|n| n.as_str()) {
-            if name == "answer" {
-                if let Some(args) = tool_call.get("arguments") {
-                    if let Some(text) = args.get("text").and_then(|t| t.as_str()) {
-                        return Ok(EditResponse {
-                            content: text.to_string(),
-                            usage: resp.usage,
-                        });
-                    }
-                }
-            }
-        }
-    }
+    let content = if let Some(answer) = extract_answer_from_tool_calls(&message.tool_calls) {
+        answer
+    } else if let Some(answer) = extract_answer_text(&message.content) {
+        answer
+    } else {
+        message.content.clone()
+    };
 
-    // Return as is
     Ok(EditResponse {
         content,
         usage: resp.usage,
@@ -488,15 +479,149 @@ async fn execute_tool(repo_root: &std::path::Path, function: &ToolCallFunction) 
             Err(e) => format!("Error parsing arguments: {}", e),
         },
         "answer" => match serde_json::from_str::<serde_json::Value>(&function.arguments) {
-            Ok(args) => args
-                .get("text")
-                .and_then(|v| v.as_str())
-                .unwrap_or("No answer provided")
-                .to_string(),
+            Ok(args) => {
+                extract_answer_args(&args).unwrap_or_else(|| "No answer provided".to_string())
+            }
             Err(e) => format!("Error parsing arguments: {}", e),
         },
         _ => format!("Unknown tool: {}", function.name),
     }
+}
+
+fn extract_answer_from_tool_calls(calls: &[ToolCall]) -> Option<String> {
+    for call in calls {
+        if call.function.name == "answer" {
+            if let Ok(args) = serde_json::from_str::<serde_json::Value>(&call.function.arguments) {
+                if let Some(text) = extract_answer_args(&args) {
+                    return Some(text);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn extract_answer_text(content: &str) -> Option<String> {
+    if let Some(xml) = extract_answer_from_xml(content) {
+        return Some(xml);
+    }
+
+    let value: serde_json::Value = serde_json::from_str(content).ok()?;
+
+    if let Some(text) = extract_answer_text_from_value(&value) {
+        return Some(text);
+    }
+
+    if let Some(array) = value.as_array() {
+        for item in array {
+            if let Some(text) = extract_answer_text_from_value(item) {
+                return Some(text);
+            }
+        }
+    }
+
+    None
+}
+
+fn extract_answer_text_from_value(value: &serde_json::Value) -> Option<String> {
+    if let Some(obj) = value.as_object() {
+        if let Some(answer) = obj.get("answer") {
+            if let Some(text) = extract_answer_text_from_value(answer) {
+                return Some(text);
+            }
+        }
+
+        if let Some(name) = obj.get("name").and_then(|n| n.as_str()) {
+            if name == "answer" {
+                if let Some(args) = obj.get("arguments") {
+                    if let Some(text) = extract_answer_args(args) {
+                        return Some(text);
+                    }
+                }
+            }
+        }
+
+        if let Some(tool) = obj.get("tool").and_then(|t| t.as_str()) {
+            if tool == "answer" {
+                if let Some(resp) = obj.get("response").and_then(|r| r.as_str()) {
+                    return Some(resp.to_string());
+                }
+                if let Some(args) = obj.get("arguments") {
+                    if let Some(text) = extract_answer_args(args) {
+                        return Some(text);
+                    }
+                }
+            }
+        }
+
+        if let Some(text) = obj.get("text").and_then(|t| t.as_str()) {
+            return Some(text.to_string());
+        }
+        if let Some(resp) = obj.get("response").and_then(|r| r.as_str()) {
+            return Some(resp.to_string());
+        }
+    }
+    None
+}
+
+fn extract_answer_args(args: &serde_json::Value) -> Option<String> {
+    if let Some(text) = args.get("text").and_then(|t| t.as_str()) {
+        return Some(text.to_string());
+    }
+    if let Some(response) = args.get("response").and_then(|r| r.as_str()) {
+        return Some(response.to_string());
+    }
+    if let Some(answer) = args.get("answer") {
+        return extract_answer_text_from_value(answer);
+    }
+    if let Some(value) = args.as_str() {
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(value) {
+            return extract_answer_args(&parsed);
+        }
+        return Some(value.to_string());
+    }
+    None
+}
+
+fn extract_answer_from_xml(content: &str) -> Option<String> {
+    if !content.contains("<function_calls") {
+        return None;
+    }
+
+    let mut search_tags = vec!["<parameter name=\"response\">", "<parameter name=\"text\">"];
+
+    for tag in search_tags.drain(..) {
+        if let Some(start) = content.find(tag) {
+            let after_tag = &content[start + tag.len()..];
+            if let Some(end) = after_tag.find("</parameter>") {
+                let raw = after_tag[..end].trim();
+                let decoded = decode_xml_entities(raw);
+                if !decoded.trim().is_empty() {
+                    return Some(decoded.trim().to_string());
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn decode_xml_entities(input: &str) -> String {
+    if !(input.contains("&lt;")
+        || input.contains("&gt;")
+        || input.contains("&amp;")
+        || input.contains("&quot;")
+        || input.contains("&#39;"))
+    {
+        return input.to_string();
+    }
+
+    let mut s = input.replace("&amp;", "&");
+    s = s.replace("&lt;", "<");
+    s = s.replace("&gt;", ">");
+    s = s.replace("&quot;", "\"");
+    s = s.replace("&#39;", "'");
+    s
 }
 
 fn truncate_output(text: String) -> String {

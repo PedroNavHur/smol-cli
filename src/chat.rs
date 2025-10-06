@@ -120,22 +120,32 @@ pub async fn run(model_override: Option<String>) -> Result<()> {
 
             debug!("LLM raw: {}", agent_outcome.response.content);
 
-            let mut parse_failed = false;
-            match edits::parse_edits(&agent_outcome.response.content) {
-                Ok(batch) => {
-                    apply_with_review(batch, &mut last_backups)?;
+            let mut summary = agent::summarize_turn(input, &agent_outcome);
+
+            if agent_outcome.is_treated_as_info {
+                if agent_outcome.response.content.trim().is_empty() {
+                    println!("No response from model.");
+                } else {
+                    println!("{}", agent_outcome.response.content.trim());
                 }
-                Err(e) => {
-                    parse_failed = true;
-                    println!("Model did not return valid edits JSON: {e}");
-                    println!("Raw response:\n{}", agent_outcome.response.content);
+            } else {
+                let mut parse_failed = false;
+                match edits::parse_edits(&agent_outcome.response.content) {
+                    Ok(batch) => {
+                        apply_with_review(batch, &mut last_backups)?;
+                    }
+                    Err(e) => {
+                        parse_failed = true;
+                        println!("Model did not return valid edits JSON: {e}");
+                        println!("Raw response:\n{}", agent_outcome.response.content);
+                    }
+                }
+
+                if parse_failed {
+                    summary.push_str("\nParse error when applying edits.");
                 }
             }
 
-            let mut summary = agent::summarize_turn(input, &agent_outcome);
-            if parse_failed {
-                summary.push_str("\nParse error when applying edits.");
-            }
             memory.push(summary);
             if memory.len() > 6 {
                 memory.remove(0);

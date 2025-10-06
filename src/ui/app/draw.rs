@@ -86,10 +86,8 @@ pub(super) fn draw(app: &mut App, frame: &mut Frame) {
 
     let history = render_history(app, history_area.width as usize);
 
-    // Calculate how many messages can fit
-    let messages_per_screen = (history_area.height / 2).max(1) as usize;
-    // Auto-scroll to show the latest messages
-    let target_scroll = app.messages.len().saturating_sub(messages_per_screen);
+    // Always target the most recent message when auto-scroll is enabled
+    let target_scroll = app.messages.len().saturating_sub(1);
     // Auto-scroll if enabled
     if app.auto_scroll_enabled {
         app.activity_scroll = target_scroll;
@@ -104,7 +102,12 @@ pub(super) fn draw(app: &mut App, frame: &mut Frame) {
                 .border_style(Style::default().fg(ACTIVITY_BORDER))
                 .title("Activity"),
         )
-        .scroll(((app.activity_scroll * 2).try_into().unwrap(), 0))
+        .scroll((
+            (app.activity_scroll.saturating_mul(2))
+                .try_into()
+                .unwrap_or(0),
+            0,
+        ))
         .wrap(Wrap { trim: false });
     frame.render_widget(history_block, history_area);
 

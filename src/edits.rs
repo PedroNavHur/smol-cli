@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Edit {
@@ -60,14 +61,16 @@ pub fn parse_actions(json_text: &str) -> Result<Vec<Action>> {
                     let path = args.get("file_path")?.as_str()?.to_string();
                     let old_string = args.get("old_string")?.as_str()?.to_string();
                     let new_string = args.get("new_string")?.as_str()?.to_string();
-                    Some(Action::Edit(Edit {
+                    let mut edit = Edit {
                         path,
                         op: "replace".to_string(),
                         anchor: old_string,
                         snippet: new_string,
                         limit: 1,
                         rationale: None,
-                    }))
+                    };
+                    normalize_html(&mut edit);
+                    Some(Action::Edit(edit))
                 }
                 _ => None,
             }
@@ -75,6 +78,37 @@ pub fn parse_actions(json_text: &str) -> Result<Vec<Action>> {
         .collect();
 
     Ok(actions)
+}
+
+fn normalize_html(edit: &mut Edit) {
+    if !is_html_path(&edit.path) {
+        return;
+    }
+    edit.anchor = html_unescape(&edit.anchor).into_owned();
+    edit.snippet = html_unescape(&edit.snippet).into_owned();
+}
+
+fn is_html_path(path: &str) -> bool {
+    let lowered = path.to_ascii_lowercase();
+    lowered.ends_with(".html") || lowered.ends_with(".htm")
+}
+
+fn html_unescape(input: &str) -> Cow<'_, str> {
+    if !(input.contains("&lt;")
+        || input.contains("&gt;")
+        || input.contains("&amp;")
+        || input.contains("&quot;")
+        || input.contains("&#39;"))
+    {
+        return Cow::Borrowed(input);
+    }
+
+    let mut s = input.replace("&amp;", "&");
+    s = s.replace("&lt;", "<");
+    s = s.replace("&gt;", ">");
+    s = s.replace("&quot;", "\"");
+    s = s.replace("&#39;", "'");
+    Cow::Owned(s)
 }
 
 pub fn parse_edits(json_text: &str) -> Result<EditBatch> {
