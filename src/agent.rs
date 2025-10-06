@@ -72,7 +72,10 @@ pub async fn run(
     };
 
     // Check if this is an informational query
-    let is_informational = plan_steps.iter().any(|step| step.description.to_lowercase().contains("answer"));
+    let is_informational = user_prompt.to_lowercase().contains("information") ||
+                          user_prompt.to_lowercase().contains("about") ||
+                          user_prompt.to_lowercase().contains("tell me") ||
+                          plan_steps.iter().any(|step| step.description.to_lowercase().contains("answer"));
 
     let mut reads = Vec::new();
     let mut creates = Vec::new();
@@ -331,11 +334,18 @@ fn parse_plan(content: &str) -> Option<Vec<PlanStep>> {
 }
 
 fn fallback_plan(user_prompt: &str) -> Vec<PlanStep> {
-    vec![PlanStep {
-        description: format!("Review project context and answer: {user_prompt}"),
-        read: None,
-        create: None,
-    }]
+    vec![
+        PlanStep {
+            description: "List directory .: To get an overview of the repository structure and identify key files like README.md, source code, or configuration files.".to_string(),
+            read: None,
+            create: None,
+        },
+        PlanStep {
+            description: format!("Review project context and answer: {user_prompt}"),
+            read: None,
+            create: None,
+        }
+    ]
 }
 
 fn truncate(s: &str, max: usize) -> String {

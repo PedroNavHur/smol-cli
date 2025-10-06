@@ -55,6 +55,7 @@ pub struct Choice {
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct AssistantMessage {
+    #[allow(dead_code)]
     pub role: String,
     #[serde(default)]
     pub content: String,
@@ -282,15 +283,31 @@ pub async fn provide_information(
         .await
         .context("llm decode failed")?;
 
-    let tool_calls = resp
-        .choices
-        .first()
-        .map(|c| c.message.tool_calls.clone())
-        .unwrap_or_default();
+    let choice = resp.choices.first();
+    let tool_calls = choice.map(|c| c.message.tool_calls.clone()).unwrap_or_default();
+    let direct_content = choice.map(|c| c.message.content.clone()).unwrap_or_default();
 
-    // Return tool calls as content for now
+    // For informational queries, extract the answer from provide_answer tool call or use direct content
+    let content = if let Some(tool_call) = tool_calls.first() {
+        if tool_call.function.name == "provide_answer" {
+            if let Ok(args) = serde_json::from_str::<serde_json::Value>(&tool_call.function.arguments) {
+                if let Some(answer) = args.get("answer").and_then(|a| a.as_str()) {
+                    answer.to_string()
+                } else {
+                    direct_content
+                }
+            } else {
+                direct_content
+            }
+        } else {
+            direct_content
+        }
+    } else {
+        direct_content
+    };
+
     Ok(EditResponse {
-        content: serde_json::to_string(&tool_calls).unwrap_or_default(),
+        content,
         usage: resp.usage,
     })
 }

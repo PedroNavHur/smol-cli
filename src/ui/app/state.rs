@@ -150,16 +150,37 @@ impl App {
                 }
 
                 // Try to parse actions from the response
-                if let Ok(actions) = edits::parse_actions(&outcome.response.content) {
-                    let has_answer = actions.iter().any(|action| matches!(action, edits::Action::ProvideAnswer { .. }));
+                if outcome.response.content.trim().starts_with('[') || outcome.response.content.trim().starts_with('{') {
+                    if let Ok(actions) = edits::parse_actions(&outcome.response.content) {
+                        let has_answer = actions.iter().any(|action| matches!(action, edits::Action::ProvideAnswer { .. }));
 
-                    if has_answer {
-                        // Display the answer
-                        let answers = actions.iter().filter_map(|action| if let edits::Action::ProvideAnswer { answer } = action { Some(answer.clone()) } else { None }).collect::<Vec<_>>();
-                        for answer in answers {
-                            self.add_message(MessageKind::Info, answer);
+                        // Display any read or list actions
+                        for action in &actions {
+                            match action {
+                                edits::Action::ReadFile { path } => {
+                                    self.add_message(MessageKind::Tool, format!("Model requested to read file: {}", path));
+                                }
+                                edits::Action::ListDirectory { path } => {
+                                    self.add_message(MessageKind::Tool, format!("Model requested to list directory: {}", path));
+                                }
+                                _ => {}
+                            }
                         }
-                        self.add_message(MessageKind::Tool, "Analysis complete.".into());
+
+                        if has_answer {
+                            // Display the answer
+                            let answers = actions.iter().filter_map(|action| if let edits::Action::ProvideAnswer { answer } = action { Some(answer.clone()) } else { None }).collect::<Vec<_>>();
+                            for answer in answers {
+                                self.add_message(MessageKind::Info, answer);
+                            }
+                            self.add_message(MessageKind::Tool, "Analysis complete.".into());
+                        } else {
+                            if batch.edits.is_empty() {
+                                self.add_message(MessageKind::Info, "No edits proposed.".into());
+                            } else if let Err(err) = self.begin_review(batch) {
+                                self.add_message(MessageKind::Error, format!("Failed to prepare edits: {err}"));
+                            }
+                        }
                     } else {
                         if batch.edits.is_empty() {
                             self.add_message(MessageKind::Info, "No edits proposed.".into());
@@ -168,10 +189,12 @@ impl App {
                         }
                     }
                 } else {
-                    if batch.edits.is_empty() {
-                        self.add_message(MessageKind::Info, "No edits proposed.".into());
-                    } else if let Err(err) = self.begin_review(batch) {
-                        self.add_message(MessageKind::Error, format!("Failed to prepare edits: {err}"));
+                    // Direct answer
+                    if !outcome.response.content.trim().is_empty() {
+                        self.add_message(MessageKind::Info, outcome.response.content.clone());
+                        self.add_message(MessageKind::Tool, "Analysis complete.".into());
+                    } else {
+                        self.add_message(MessageKind::Info, "No response from model.".into());
                     }
                 }
 
