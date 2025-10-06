@@ -1,5 +1,4 @@
 use crate::config::AppConfig;
-use crate::edits;
 use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -103,12 +102,6 @@ const SYSTEM_PROMPT: &str = r#"You are Smol CLI, a helpful coding assistant that
 
 You have access to tools: read, list, edit, answer.
 
-Tool descriptions:
-- read: Read a file. Arguments: {"file_path": "path/to/file"}
-- list: List directory contents. Arguments: {"path": "path/to/dir"}
-- edit: Edit a file by replacing text. Arguments: {"file_path": "path/to/file", "old_string": "exact text to replace", "new_string": "replacement text"}
-- answer: Provide an answer to a question. Arguments: {"text": "answer text"}
-
 For code changes:
 - First use read/list to understand the codebase
 - Then use edit to make changes with exact old_string/new_string
@@ -117,21 +110,18 @@ For questions:
 - Use answer to respond
 - Use read/list if needed
 
-Output ONLY a JSON array of tool calls. Example:
-[{"name": "read", "arguments": {"file_path": "README.md"}}]
-
-Do not output any other text."#;
+Use the tools to accomplish the user's request."#;
 
 const INFO_SYSTEM_PROMPT: &str = r#"You are Smol CLI, answering questions about codebases.
 
 Context has been gathered from exploring the codebase. Now provide a helpful answer to: {user_question}
 
-MANDATORY: Use ONLY the provide_answer tool for your response. Never output text directly.
+MANDATORY: Use ONLY the answer tool for your response. Never output text directly.
 
 Tools:
-- provide_answer: Your response (MUST USE THIS)
+- answer: Your response (MUST USE THIS)
 
-Do not use other tools unless absolutely necessary. Always provide_answer with your complete answer."#;
+Do not use other tools unless absolutely necessary. Always use answer with your complete answer."#;
 
 const PLANNER_PROMPT: &str = r#"You are Smol CLI's planning assistant.
 Given a user request, determine if it's asking for code changes or information about the codebase.
@@ -153,26 +143,26 @@ fn edit_tools() -> Vec<Tool> {
         Tool {
             r#type: "function".to_string(),
             function: ToolFunction {
-                name: "read_file".to_string(),
-                description: "Read a specific file to understand the codebase".to_string(),
+                name: "read".to_string(),
+                description: "Read a file".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "path": {"type": "string", "description": "Relative path to the file to read"}
+                        "file_path": {"type": "string", "description": "Path to the file to read"}
                     },
-                    "required": ["path"]
+                    "required": ["file_path"]
                 }),
             },
         },
         Tool {
             r#type: "function".to_string(),
             function: ToolFunction {
-                name: "list_directory".to_string(),
-                description: "List contents of a directory".to_string(),
+                name: "list".to_string(),
+                description: "List directory contents".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "path": {"type": "string", "description": "Relative path to the directory to list", "default": "."}
+                        "path": {"type": "string", "description": "Path to the directory to list", "default": "."}
                     }
                 }),
             },
@@ -180,65 +170,30 @@ fn edit_tools() -> Vec<Tool> {
         Tool {
             r#type: "function".to_string(),
             function: ToolFunction {
-                name: "replace_text".to_string(),
-                description: "Replace text in a file using an anchor".to_string(),
+                name: "edit".to_string(),
+                description: "Edit a file by replacing text".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "path": {"type": "string", "description": "Relative path to the file"},
-                        "anchor": {"type": "string", "description": "Unique text to anchor the replacement"},
-                        "snippet": {"type": "string", "description": "New text to replace with"},
-                        "rationale": {"type": "string", "description": "Reason for this edit"}
+                        "file_path": {"type": "string", "description": "Path to the file to modify"},
+                        "old_string": {"type": "string", "description": "Exact text to replace"},
+                        "new_string": {"type": "string", "description": "Text to replace it with"}
                     },
-                    "required": ["path", "anchor", "snippet"]
+                    "required": ["file_path", "old_string", "new_string"]
                 }),
             },
         },
         Tool {
             r#type: "function".to_string(),
             function: ToolFunction {
-                name: "insert_after".to_string(),
-                description: "Insert text after an anchor in a file".to_string(),
+                name: "answer".to_string(),
+                description: "Provide an answer to a question".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "path": {"type": "string", "description": "Relative path to the file"},
-                        "anchor": {"type": "string", "description": "Text to insert after"},
-                        "snippet": {"type": "string", "description": "Text to insert"},
-                        "rationale": {"type": "string", "description": "Reason for this edit"}
+                        "text": {"type": "string", "description": "The answer text"}
                     },
-                    "required": ["path", "anchor", "snippet"]
-                }),
-            },
-        },
-        Tool {
-            r#type: "function".to_string(),
-            function: ToolFunction {
-                name: "insert_before".to_string(),
-                description: "Insert text before an anchor in a file".to_string(),
-                parameters: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "Relative path to the file"},
-                        "anchor": {"type": "string", "description": "Text to insert before"},
-                        "snippet": {"type": "string", "description": "Text to insert"},
-                        "rationale": {"type": "string", "description": "Reason for this edit"}
-                    },
-                    "required": ["path", "anchor", "snippet"]
-                }),
-            },
-        },
-        Tool {
-            r#type: "function".to_string(),
-            function: ToolFunction {
-                name: "provide_answer".to_string(),
-                description: "Provide an informational answer about the codebase".to_string(),
-                parameters: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "answer": {"type": "string", "description": "The answer to provide"}
-                    },
-                    "required": ["answer"]
+                    "required": ["text"]
                 }),
             },
         },
@@ -321,6 +276,7 @@ pub async fn propose_edits(
     user_prompt: &str,
     context: &str,
 ) -> Result<EditResponse> {
+    let tools = edit_tools();
     let body = ChatRequest {
         model: cfg.provider.model.clone(),
         messages: vec![
@@ -336,7 +292,7 @@ pub async fn propose_edits(
             },
         ],
         temperature: Some(cfg.runtime.temperature),
-        tools: None, // No API tools, model outputs JSON
+        tools: Some(tools),
     };
 
     let client = Client::new();
@@ -359,67 +315,23 @@ pub async fn propose_edits(
         .context("llm decode failed")?;
 
     let choice = resp.choices.first().ok_or_else(|| anyhow::anyhow!("no choices"))?;
-    let content = choice.message.content.clone();
+    let tool_calls = choice.message.tool_calls.clone();
 
-    // Parse the content as JSON tool calls
-    match serde_json::from_str::<Vec<serde_json::Value>>(&content) {
-        Ok(tool_calls_json) => {
-            let mut edit_actions = Vec::new();
-            for tool_call_json in tool_calls_json {
-                if let Some(name) = tool_call_json.get("name").and_then(|n| n.as_str()) {
-                    if let Some(args) = tool_call_json.get("arguments") {
-                        match name {
-                            "read" | "list" => {
-                                // Execute and ignore result for now
-                                let args_str = serde_json::to_string(args).unwrap_or_default();
-                                let tool_call = ToolCall {
-                                    id: "manual".to_string(),
-                                    r#type: "function".to_string(),
-                                    function: ToolCallFunction {
-                                        name: name.to_string(),
-                                        arguments: args_str,
-                                    },
-                                };
-                                execute_tool(repo_root, &tool_call.function).await;
-                            }
-                            "edit" => {
-                                if let (Some(file_path), Some(old_string), Some(new_string)) = (
-                                    args.get("file_path").and_then(|v| v.as_str()),
-                                    args.get("old_string").and_then(|v| v.as_str()),
-                                    args.get("new_string").and_then(|v| v.as_str()),
-                                ) {
-                                    // For edit, we can apply it directly or collect as action
-                                    // Since it's replace, create an edit action
-                                    edit_actions.push(edits::Edit {
-                                        path: file_path.to_string(),
-                                        op: "replace".to_string(),
-                                        anchor: old_string.to_string(),
-                                        snippet: new_string.to_string(),
-                                        limit: 1,
-                                        rationale: None,
-                                    });
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
+    for tool_call in &tool_calls {
+        match tool_call.function.name.as_str() {
+            "read" | "list" => {
+                // Execute tool to gather information
+                execute_tool(repo_root, &tool_call.function).await;
             }
-            // Return the edit actions as JSON
-            let batch = edits::EditBatch { edits: edit_actions };
-            Ok(EditResponse {
-                content: serde_json::to_string(&vec![serde_json::json!({"edits": batch.edits})]).unwrap_or_default(),
-                usage: resp.usage,
-            })
-        }
-        Err(_) => {
-            // Not JSON, return as is
-            Ok(EditResponse {
-                content,
-                usage: resp.usage,
-            })
+            _ => {}
         }
     }
+
+    // Return the tool calls as JSON for parsing
+    Ok(EditResponse {
+        content: serde_json::to_string(&tool_calls).unwrap_or_default(),
+        usage: resp.usage,
+    })
 }
 
 async fn execute_tool(repo_root: &std::path::Path, function: &ToolCallFunction) -> String {

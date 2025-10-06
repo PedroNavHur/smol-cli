@@ -42,59 +42,30 @@ pub fn parse_actions(json_text: &str) -> Result<Vec<Action>> {
             let args: serde_json::Value = serde_json::from_str(function.get("arguments")?.as_str()?).ok()?;
 
             match name {
-                "read_file" => {
-                    let path = args.get("path")?.as_str()?.to_string();
+                "read" => {
+                    let path = args.get("file_path")?.as_str()?.to_string();
                     Some(Action::ReadFile { path })
                 }
-                "list_directory" => {
+                "list" => {
                     let path = args.get("path").and_then(|p| p.as_str()).unwrap_or(".").to_string();
                     Some(Action::ListDirectory { path })
                 }
-                "replace_text" => {
-                    let path = args.get("path")?.as_str()?.to_string();
-                    let anchor = args.get("anchor")?.as_str()?.to_string();
-                    let snippet = args.get("snippet")?.as_str()?.to_string();
-                    let rationale = args.get("rationale").and_then(|r| r.as_str()).map(|s| s.to_string());
+                "edit" => {
+                    let path = args.get("file_path")?.as_str()?.to_string();
+                    let old_string = args.get("old_string")?.as_str()?.to_string();
+                    let new_string = args.get("new_string")?.as_str()?.to_string();
                     Some(Action::Edit(Edit {
                         path,
                         op: "replace".to_string(),
-                        anchor,
-                        snippet,
+                        anchor: old_string,
+                        snippet: new_string,
                         limit: 1,
-                        rationale,
+                        rationale: None,
                     }))
                 }
-                "insert_after" => {
-                    let path = args.get("path")?.as_str()?.to_string();
-                    let anchor = args.get("anchor")?.as_str()?.to_string();
-                    let snippet = args.get("snippet")?.as_str()?.to_string();
-                    let rationale = args.get("rationale").and_then(|r| r.as_str()).map(|s| s.to_string());
-                    Some(Action::Edit(Edit {
-                        path,
-                        op: "insert_after".to_string(),
-                        anchor,
-                        snippet,
-                        limit: 1,
-                        rationale,
-                    }))
-                }
-                "insert_before" => {
-                    let path = args.get("path")?.as_str()?.to_string();
-                    let anchor = args.get("anchor")?.as_str()?.to_string();
-                    let snippet = args.get("snippet")?.as_str()?.to_string();
-                    let rationale = args.get("rationale").and_then(|r| r.as_str()).map(|s| s.to_string());
-                    Some(Action::Edit(Edit {
-                        path,
-                        op: "insert_before".to_string(),
-                        anchor,
-                        snippet,
-                        limit: 1,
-                        rationale,
-                    }))
-                }
-                "provide_answer" => {
-                    let answer = args.get("answer")?.as_str()?.to_string();
-                    Some(Action::ProvideAnswer { answer })
+                "answer" => {
+                    let text = args.get("text")?.as_str()?.to_string();
+                    Some(Action::ProvideAnswer { answer: text })
                 }
                 _ => None,
             }
