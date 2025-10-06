@@ -23,6 +23,7 @@ fn default_limit() -> usize {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum Action {
     Edit(Edit),
     ReadFile { path: String },

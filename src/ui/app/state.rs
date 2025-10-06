@@ -228,6 +228,7 @@ impl App {
         super::actions::submit_prompt(self).await
     }
 
+    #[allow(dead_code)]
     pub(super) fn begin_review(&mut self, batch: edits::EditBatch) -> Result<()> {
         let mut edits = Vec::new();
         let backup_root = timestamp_dir()?;

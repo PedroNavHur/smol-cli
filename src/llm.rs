@@ -111,6 +111,8 @@ To propose code changes:
 
 For new files, set old_string to an empty string and provide the full file contents in new_string.
 
+Always return literal characters (e.g., `<`, `>`, `&`) without HTML entity escaping. Emit the exact bytes that should appear in the file.
+
 Always use the edit tool for code modifications. Do not describe changes in text."#;
 
 const INFO_SYSTEM_PROMPT: &str = r#"You are Smol CLI, answering questions about codebases.
@@ -191,7 +193,7 @@ fn edit_tools() -> Vec<Tool> {
 
 pub async fn provide_information(
     cfg: &AppConfig,
-    repo_root: &std::path::Path,
+    _repo_root: &std::path::Path,
     user_prompt: &str,
     context: &str,
 ) -> Result<EditResponse> {
