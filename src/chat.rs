@@ -201,10 +201,20 @@ async fn handle_slash(
         "/undo" => {
             if let Some(b) = last_backups.pop() {
                 if let Some(target) = target_from_backup(&b) {
-                    if let Err(e) = fs::copy(&b, &target) {
-                        println!("Undo failed: {e}");
+                    if !b.exists() {
+                        match fs::remove_file(&target) {
+                            Ok(_) => println!("Removed {}", target.display()),
+                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                                println!("Nothing to undo for {}", target.display())
+                            }
+                            Err(e) => println!("Undo failed: {e}"),
+                        }
                     } else {
-                        println!("Reverted {}", target.display());
+                        if let Err(e) = fs::copy(&b, &target) {
+                            println!("Undo failed: {e}");
+                        } else {
+                            println!("Reverted {}", target.display());
+                        }
                     }
                 } else {
                     println!("No target path found for backup {}", b.display());
@@ -284,7 +294,7 @@ fn is_write_blocked(path: &str) -> bool {
 }
 
 fn apply_with_review(batch: edits::EditBatch, last_backups: &mut Vec<PathBuf>) -> Result<()> {
-    use std::path::Path;
+    use std::{io::ErrorKind, path::Path};
     if batch.edits.is_empty() {
         println!("No edits proposed.");
         return Ok(());
@@ -302,8 +312,14 @@ fn apply_with_review(batch: edits::EditBatch, last_backups: &mut Vec<PathBuf>) -
         let abs = fsutil::ensure_inside_repo(&root, Path::new(&e.path))
             .with_context(|| format!("invalid path {}", e.path))?;
 
-        let old =
-            std::fs::read_to_string(&abs).with_context(|| format!("read {}", abs.display()))?;
+        let (old, existed) = match std::fs::read_to_string(&abs) {
+            Ok(contents) => (contents, true),
+            Err(err) if err.kind() == ErrorKind::NotFound => (String::new(), false),
+            Err(err) => {
+                println!("Skipping {}: failed to read file ({err})", e.path);
+                continue;
+            }
+        };
 
         let new = match edits::apply_edit(&old, e) {
             Ok(n) => n,
@@ -335,8 +351,13 @@ fn apply_with_review(batch: edits::EditBatch, last_backups: &mut Vec<PathBuf>) -
         if yes {
             let backup_file = fsutil::backup_path(&backup_root, &abs, &root)?;
             fsutil::backup_and_write(&abs, &new, &backup_file)?;
-            println!("Applied. Backup: {}", backup_file.display());
-            last_backups.push(backup_file);
+            if existed {
+                println!("Applied. Backup: {}", backup_file.display());
+                last_backups.push(backup_file);
+            } else {
+                println!("Created new file.");
+                last_backups.push(backup_file);
+            }
         } else {
             println!("Skipped {}", e.path);
         }

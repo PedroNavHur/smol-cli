@@ -1,5 +1,6 @@
 use std::{
     fs,
+    io::ErrorKind,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -251,8 +252,9 @@ impl App {
                 }
             };
 
-            let old = match fs::read_to_string(&abs) {
-                Ok(s) => s,
+            let (old, _existed) = match fs::read_to_string(&abs) {
+                Ok(s) => (s, true),
+                Err(err) if err.kind() == ErrorKind::NotFound => (String::new(), false),
                 Err(err) => {
                     self.add_message(
                         MessageKind::Error,
@@ -332,8 +334,9 @@ impl App {
                 }
             };
 
-            let old = match fs::read_to_string(&abs) {
-                Ok(s) => s,
+            let (old, existed) = match fs::read_to_string(&abs) {
+                Ok(s) => (s, true),
+                Err(err) if err.kind() == ErrorKind::NotFound => (String::new(), false),
                 Err(err) => {
                     self.add_message(
                         MessageKind::Error,
@@ -358,9 +361,14 @@ impl App {
 
             // Create backup
             let backup_path = backup_root.join(format!("{}.backup", applied));
-            fs::write(&backup_path, &old).ok();
+            if existed {
+                fs::write(&backup_path, &old).ok();
+            }
 
             // Apply the change
+            if let Some(parent) = abs.parent() {
+                fs::create_dir_all(parent).ok();
+            }
             if let Err(err) = fs::write(&abs, &new) {
                 self.add_message(
                     MessageKind::Error,
@@ -369,7 +377,11 @@ impl App {
                 continue;
             }
 
-            self.add_message(MessageKind::Tool, format!("Applied edit to {}", e.path));
+            if existed {
+                self.add_message(MessageKind::Tool, format!("Applied edit to {}", e.path));
+            } else {
+                self.add_message(MessageKind::Tool, format!("Created new file {}", e.path));
+            }
             applied += 1;
         }
 
@@ -559,9 +571,11 @@ pub(super) fn target_from_backup(repo_root: &Path, backup: &Path) -> Option<Path
     let smol = fsutil::smol_dir().ok()?;
     let backups = smol.join("backups");
     let rel = backup.strip_prefix(&backups).ok()?;
-    let mut comps = rel.components();
-    comps.next()?; // timestamp
-    let stripped: PathBuf = comps.collect();
+    let comps: Vec<_> = rel.components().collect();
+    if comps.len() < 2 {
+        return None;
+    }
+    let stripped: PathBuf = comps.iter().skip(1).collect();
     Some(repo_root.join(stripped))
 }
 

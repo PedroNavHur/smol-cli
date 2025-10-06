@@ -1,6 +1,7 @@
 use std::{
     collections::HashSet,
     fs,
+    io::ErrorKind,
     path::{Path, PathBuf},
 };
 
@@ -212,8 +213,13 @@ fn read_file(repo_root: &Path, rel: &str) -> Result<(PathBuf, String)> {
     // First try the normal path
     if let Ok(abs) = fsutil::ensure_inside_repo(repo_root, rel_path) {
         if abs.exists() {
-            let contents = fs::read_to_string(&abs)
-                .with_context(|| format!("failed to read {}", abs.display()))?;
+            let contents = match fs::read_to_string(&abs) {
+                Ok(c) => c,
+                Err(e) if e.kind() == ErrorKind::NotFound => String::new(),
+                Err(e) => {
+                    return Err(anyhow::anyhow!("failed to read {}: {}", abs.display(), e));
+                }
+            };
             return Ok((abs, contents));
         }
     }
@@ -221,8 +227,13 @@ fn read_file(repo_root: &Path, rel: &str) -> Result<(PathBuf, String)> {
     // If that fails, try relative to current directory (for robustness)
     if let Ok(abs) = std::fs::canonicalize(rel_path) {
         if abs.exists() && abs.starts_with(repo_root) {
-            let contents = fs::read_to_string(&abs)
-                .with_context(|| format!("failed to read {}", abs.display()))?;
+            let contents = match fs::read_to_string(&abs) {
+                Ok(c) => c,
+                Err(e) if e.kind() == ErrorKind::NotFound => String::new(),
+                Err(e) => {
+                    return Err(anyhow::anyhow!("failed to read {}: {}", abs.display(), e));
+                }
+            };
             return Ok((abs, contents));
         }
     }
@@ -230,16 +241,26 @@ fn read_file(repo_root: &Path, rel: &str) -> Result<(PathBuf, String)> {
     // Try from repo_root directly
     let abs = repo_root.join(rel_path);
     if abs.exists() {
-        let contents = fs::read_to_string(&abs)
-            .with_context(|| format!("failed to read {}", abs.display()))?;
+        let contents = match fs::read_to_string(&abs) {
+            Ok(c) => c,
+            Err(e) if e.kind() == ErrorKind::NotFound => String::new(),
+            Err(e) => {
+                return Err(anyhow::anyhow!("failed to read {}: {}", abs.display(), e));
+            }
+        };
         return Ok((abs, contents));
     }
 
     // If all else fails, use the original method to get a proper error
     let abs = fsutil::ensure_inside_repo(repo_root, rel_path)
         .with_context(|| format!("invalid path {rel}"))?;
-    let contents =
-        fs::read_to_string(&abs).with_context(|| format!("failed to read {}", abs.display()))?;
+    let contents = match fs::read_to_string(&abs) {
+        Ok(c) => c,
+        Err(e) if e.kind() == ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            return Err(anyhow::anyhow!("failed to read {}: {}", abs.display(), e));
+        }
+    };
     Ok((abs, contents))
 }
 

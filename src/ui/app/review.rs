@@ -1,5 +1,4 @@
-use std::fs;
-use std::path::PathBuf;
+use std::{fs, io::ErrorKind, path::PathBuf};
 
 use anyhow::Result;
 
@@ -72,12 +71,33 @@ fn advance_review(app: &mut App) {
 pub(super) fn undo_last(app: &mut App) {
     if let Some(backup) = app.last_backups.pop() {
         match super::state::target_from_backup(&app.repo_root, &backup) {
-            Some(target) => match fs::copy(&backup, &target) {
-                Ok(_) => {
-                    app.add_message(MessageKind::Info, format!("Reverted {}", target.display()))
+            Some(target) => {
+                if backup.exists() {
+                    match fs::copy(&backup, &target) {
+                        Ok(_) => app.add_message(
+                            MessageKind::Info,
+                            format!("Reverted {}", target.display()),
+                        ),
+                        Err(err) => {
+                            app.add_message(MessageKind::Error, format!("Undo failed: {err}"))
+                        }
+                    }
+                } else {
+                    match fs::remove_file(&target) {
+                        Ok(_) => app.add_message(
+                            MessageKind::Info,
+                            format!("Removed {}", target.display()),
+                        ),
+                        Err(err) if err.kind() == ErrorKind::NotFound => app.add_message(
+                            MessageKind::Info,
+                            format!("Nothing to undo for {}", target.display()),
+                        ),
+                        Err(err) => {
+                            app.add_message(MessageKind::Error, format!("Undo failed: {err}"))
+                        }
+                    }
                 }
-                Err(err) => app.add_message(MessageKind::Error, format!("Undo failed: {err}")),
-            },
+            }
             None => app.add_message(
                 MessageKind::Warn,
                 format!("Could not determine target for {}", backup.display()),

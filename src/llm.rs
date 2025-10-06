@@ -3,6 +3,7 @@ use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::io::ErrorKind;
 
 #[derive(Serialize, Clone)]
 struct Message {
@@ -107,6 +108,8 @@ You have access to tools: read, list, edit.
 To propose code changes:
 - Use read or list to understand the current codebase
 - Use edit to propose exact changes with file_path, old_string, and new_string
+
+For new files, set old_string to an empty string and provide the full file contents in new_string.
 
 Always use the edit tool for code modifications. Do not describe changes in text."#;
 
@@ -384,6 +387,7 @@ async fn execute_tool(repo_root: &std::path::Path, function: &ToolCallFunction) 
                         ) {
                             Ok(abs_path) => match std::fs::read_to_string(&abs_path) {
                                 Ok(content) => content,
+                                Err(e) if e.kind() == ErrorKind::NotFound => String::new(),
                                 Err(e) => format!("Error reading file {}: {}", file_path, e),
                             },
                             Err(e) => format!("Invalid path {}: {}", file_path, e),
