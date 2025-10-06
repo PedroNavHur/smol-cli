@@ -506,21 +506,33 @@ fn extract_answer_text(content: &str) -> Option<String> {
         return Some(xml);
     }
 
-    let value: serde_json::Value = serde_json::from_str(content).ok()?;
-
-    if let Some(text) = extract_answer_text_from_value(&value) {
-        return Some(text);
-    }
-
-    if let Some(array) = value.as_array() {
-        for item in array {
-            if let Some(text) = extract_answer_text_from_value(item) {
+    match serde_json::from_str::<serde_json::Value>(content) {
+        Ok(value) => {
+            if let Some(text) = extract_answer_text_from_value(&value) {
                 return Some(text);
             }
+
+            if let Some(array) = value.as_array() {
+                for item in array {
+                    if let Some(text) = extract_answer_text_from_value(item) {
+                        return Some(text);
+                    }
+                }
+            }
+
+            None
+        }
+        Err(_) => {
+            // Strip `<answer>` wrappers if present and return the raw content
+            if let Some(stripped) = strip_xml_wrapper(content, "answer") {
+                let decoded = decode_xml_entities(stripped.trim());
+                if !decoded.is_empty() {
+                    return Some(decoded);
+                }
+            }
+            None
         }
     }
-
-    None
 }
 
 fn extract_answer_text_from_value(value: &serde_json::Value) -> Option<String> {
@@ -622,6 +634,18 @@ fn decode_xml_entities(input: &str) -> String {
     s = s.replace("&quot;", "\"");
     s = s.replace("&#39;", "'");
     s
+}
+
+fn strip_xml_wrapper<'a>(input: &'a str, tag: &str) -> Option<&'a str> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    if let Some(start) = input.find(&open) {
+        if let Some(end) = input.rfind(&close) {
+            let inner = &input[start + open.len()..end];
+            return Some(inner);
+        }
+    }
+    None
 }
 
 fn truncate_output(text: String) -> String {

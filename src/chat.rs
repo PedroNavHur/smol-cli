@@ -1,4 +1,4 @@
-use crate::{agent, config, diff as diffmod, edits, fsutil};
+use crate::{agent, answer, config, diff as diffmod, edits, fsutil};
 use anyhow::{Context, Result};
 use inquire::{Confirm, Password, Select, error::InquireError};
 use regex::Regex;
@@ -123,10 +123,11 @@ pub async fn run(model_override: Option<String>) -> Result<()> {
             let mut summary = agent::summarize_turn(input, &agent_outcome);
 
             if agent_outcome.is_treated_as_info {
-                if agent_outcome.response.content.trim().is_empty() {
+                let formatted = answer::format_answer(&agent_outcome.response.content);
+                if formatted.trim().is_empty() {
                     println!("No response from model.");
                 } else {
-                    println!("{}", agent_outcome.response.content.trim());
+                    println!("{}", formatted);
                 }
             } else {
                 let mut parse_failed = false;

@@ -168,6 +168,18 @@ fn draw_status(app: &App, frame: &mut Frame, area: Rect) {
     ];
 
     if let Some(model) = &app.current_model {
+        let spent_cents = app
+            .last_usage
+            .as_ref()
+            .map(|usage| estimate_cost_cents(usage, model))
+            .unwrap_or(None);
+        if let Some(cents) = spent_cents {
+            first_line_spans.push(Span::raw("   Spent: "));
+            first_line_spans.push(Span::styled(
+                format!("{:.4}¢", cents),
+                Style::default().fg(Color::Green),
+            ));
+        }
         first_line_spans.push(Span::raw("   Rate in "));
         first_line_spans.push(Span::styled(
             format_cost(model.prompt_cost),
@@ -479,6 +491,16 @@ fn format_ctx_value_opt(ctx: Option<u32>) -> String {
 }
 
 fn format_cost(cost: Option<f64>) -> String {
-    cost.map(|c| format!("${:.2}/M", c * 1_000.0))
+    cost.map(|c| format!("${:.2}/M", c * 1_000_000.0))
         .unwrap_or_else(|| "--".into())
+}
+
+fn estimate_cost_cents(usage: &llm::Usage, model: &llm::Model) -> Option<f64> {
+    let prompt_tokens = usage.prompt_tokens? as f64;
+    let completion_tokens = usage.completion_tokens.unwrap_or(0) as f64;
+    let prompt_rate = model.prompt_cost?;
+    let completion_rate = model.completion_cost?;
+    let total_cost =
+        (prompt_tokens * prompt_rate + completion_tokens * completion_rate) / 1_000_000.0;
+    Some(total_cost * 100.0)
 }

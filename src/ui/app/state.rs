@@ -12,7 +12,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use tui_textarea::TextArea;
 
 use super::review::{PreparedEdit, ReviewState};
-use crate::{agent, config, diff, edits, fsutil, llm, ui::theme::PROMPT_TEXT};
+use crate::{agent, answer, config, diff, edits, fsutil, llm, ui::theme::PROMPT_TEXT};
 
 pub(super) const WELCOME_MSG: &str =
     "Smol CLI — TUI chat. Enter prompts below. y/apply, n/skip during review.";
@@ -154,11 +154,12 @@ impl App {
 
                 if outcome.is_treated_as_info {
                     // Direct answer
-                    if !outcome.response.content.trim().is_empty() {
-                        self.add_message(MessageKind::Info, outcome.response.content.clone());
-                        self.add_message(MessageKind::Tool, "Analysis complete.".into());
-                    } else {
+                    let formatted = answer::format_answer(&outcome.response.content);
+                    if formatted.trim().is_empty() {
                         self.add_message(MessageKind::Info, "No response from model.".into());
+                    } else {
+                        self.add_message(MessageKind::Info, formatted);
+                        self.add_message(MessageKind::Tool, "Analysis complete.".into());
                     }
                 } else {
                     // Auto-apply edits if any

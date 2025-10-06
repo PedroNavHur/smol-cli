@@ -4,6 +4,7 @@ use clap::{Parser, Subcommand};
 use tracing::Level;
 
 mod agent;
+mod answer;
 mod chat;
 mod config;
 mod diff;

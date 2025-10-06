@@ -153,7 +153,7 @@ pub(super) async fn on_key(app: &mut App, key: KeyEvent) -> Result<()> {
 }
 
 fn display_cost(cost: Option<f64>) -> String {
-    cost.map(|c| format!("${:.2}/M", c * 1_000.0))
+    cost.map(|c| format!("${:.2}/M", c * 1_000_000.0))
         .unwrap_or_else(|| "--".into())
 }
 
