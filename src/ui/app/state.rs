@@ -28,6 +28,7 @@ pub struct App {
     pub(super) messages: Vec<Message>,
     pub(super) view_offset: (u16, u16),
     pub(super) activity_scroll: usize,
+    pub(super) auto_scroll_enabled: bool,
     pub(super) completed_steps: Vec<bool>,
     pub(super) current_plan: Option<Vec<agent::PlanStep>>,
     pub(super) history: Vec<String>,
@@ -58,6 +59,7 @@ impl App {
             messages: Vec::new(),
             view_offset: (0, 0),
             activity_scroll: 0,
+            auto_scroll_enabled: true,
             completed_steps: Vec::new(),
             current_plan: None,
             history: Vec::new(),
@@ -149,8 +151,16 @@ impl App {
                     self.current_plan = Some(outcome.plan.clone());
                 }
 
-                // Try to parse actions from the response
-                if outcome.response.content.trim().starts_with('[') || outcome.response.content.trim().starts_with('{') {
+                if outcome.is_treated_as_info {
+                    // Direct answer
+                    if !outcome.response.content.trim().is_empty() {
+                        self.add_message(MessageKind::Info, outcome.response.content.clone());
+                        self.add_message(MessageKind::Tool, "Analysis complete.".into());
+                    } else {
+                        self.add_message(MessageKind::Info, "No response from model.".into());
+                    }
+                } else {
+                    // Try to parse actions from the response
                     if let Ok(actions) = edits::parse_actions(&outcome.response.content) {
                         let has_answer = actions.iter().any(|action| matches!(action, edits::Action::ProvideAnswer { .. }));
 
@@ -187,14 +197,6 @@ impl App {
                         } else if let Err(err) = self.begin_review(batch) {
                             self.add_message(MessageKind::Error, format!("Failed to prepare edits: {err}"));
                         }
-                    }
-                } else {
-                    // Direct answer
-                    if !outcome.response.content.trim().is_empty() {
-                        self.add_message(MessageKind::Info, outcome.response.content.clone());
-                        self.add_message(MessageKind::Tool, "Analysis complete.".into());
-                    } else {
-                        self.add_message(MessageKind::Info, "No response from model.".into());
                     }
                 }
 
@@ -238,8 +240,8 @@ impl App {
             // Adjust scroll position
             self.activity_scroll = self.activity_scroll.saturating_sub(removed);
         }
-        // Keep scroll position, don't auto-scroll
-        // Users can scroll manually to see new messages
+        // Auto-scroll to bottom for new messages
+        self.auto_scroll_enabled = true;
     }
 
     pub(super) fn reset_input(&mut self) {

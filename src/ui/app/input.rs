@@ -105,6 +105,7 @@ pub(super) async fn on_key(app: &mut App, key: KeyEvent) -> Result<()> {
             KeyCode::Char('u') | KeyCode::Up => {
                 if app.activity_scroll > 0 {
                     app.activity_scroll = app.activity_scroll.saturating_sub(1);
+                    app.auto_scroll_enabled = false;
                 }
                 return Ok(());
             }
@@ -112,24 +113,29 @@ pub(super) async fn on_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 let max_scroll = app.messages.len().saturating_sub(1);
                 if app.activity_scroll < max_scroll {
                     app.activity_scroll = app.activity_scroll.saturating_add(1);
+                    app.auto_scroll_enabled = false;
                 }
                 return Ok(());
             }
             KeyCode::Char('b') | KeyCode::PageUp => {
                 app.activity_scroll = app.activity_scroll.saturating_sub(10);
+                app.auto_scroll_enabled = false;
                 return Ok(());
             }
             KeyCode::Char('f') | KeyCode::PageDown => {
                 let max_scroll = app.messages.len().saturating_sub(1);
                 app.activity_scroll = (app.activity_scroll + 10).min(max_scroll);
+                app.auto_scroll_enabled = false;
                 return Ok(());
             }
             KeyCode::Home => {
                 app.activity_scroll = 0;
+                app.auto_scroll_enabled = false;
                 return Ok(());
             }
             KeyCode::End => {
                 app.activity_scroll = app.messages.len().saturating_sub(1);
+                app.auto_scroll_enabled = true;
                 return Ok(());
             }
             _ => {}

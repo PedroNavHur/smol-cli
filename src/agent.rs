@@ -51,6 +51,7 @@ pub struct AgentOutcome {
     pub reads: Vec<ReadLog>,
     pub creates: Vec<CreateLog>,
     pub response: llm::EditResponse,
+    pub is_treated_as_info: bool,
 }
 
 pub async fn run(
@@ -72,9 +73,14 @@ pub async fn run(
     };
 
     // Check if this is an informational query
-    let is_informational = user_prompt.to_lowercase().contains("information") ||
-                          user_prompt.to_lowercase().contains("about") ||
-                          user_prompt.to_lowercase().contains("tell me") ||
+    let lower_prompt = user_prompt.to_lowercase();
+    let is_informational = lower_prompt.contains("information") ||
+                          lower_prompt.contains("about") ||
+                          lower_prompt.contains("tell me") ||
+                          lower_prompt.contains("what") ||
+                          lower_prompt.contains("how") ||
+                          lower_prompt.contains("describe") ||
+                          lower_prompt.contains("explain") ||
                           plan_steps.iter().any(|step| step.description.to_lowercase().contains("answer"));
 
     let mut reads = Vec::new();
@@ -182,11 +188,15 @@ pub async fn run(
         llm::propose_edits(cfg, user_prompt, &base_context).await?
     };
 
+    // Check if this should be treated as informational
+    let is_treated_as_info = is_informational || (!response.content.trim().starts_with('{') && !response.content.trim().starts_with('[') && response.content.len() > 50);
+
     Ok(AgentOutcome {
         plan: plan_steps,
         reads,
         creates,
         response,
+        is_treated_as_info,
     })
 }
 

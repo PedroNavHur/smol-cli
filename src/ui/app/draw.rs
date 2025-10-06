@@ -90,9 +90,10 @@ pub(super) fn draw(app: &mut App, frame: &mut Frame) {
     let messages_per_screen = (history_area.height / 2).max(1) as usize;
     // Auto-scroll to show the latest messages
     let target_scroll = app.messages.len().saturating_sub(messages_per_screen);
-    // Only auto-scroll if not manually scrolled up
-    if app.activity_scroll == 0 || app.activity_scroll < target_scroll {
+    // Auto-scroll if enabled
+    if app.auto_scroll_enabled {
         app.activity_scroll = target_scroll;
+        app.auto_scroll_enabled = false;
     }
 
     let history_block = Paragraph::new(history)

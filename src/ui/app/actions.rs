@@ -64,19 +64,30 @@ async fn async_handle_prompt(
 ) -> AsyncEvent {
     let context = super::state::build_context(&memory).unwrap_or_else(|_| String::new());
     match agent::run(&cfg, &repo_root, &prompt, context).await {
-        Ok(outcome) => match edits::parse_edits(&outcome.response.content) {
-            Ok(batch) => AsyncEvent::Edits {
-                prompt,
-                batch,
-                outcome,
-            },
-            Err(err) => AsyncEvent::ParseError {
-                error: err.to_string(),
-                raw: outcome.response.content.clone(),
-                prompt,
-                outcome,
-            },
-        },
+        Ok(outcome) => {
+            if outcome.is_treated_as_info {
+                let batch = edits::EditBatch { edits: vec![] };
+                AsyncEvent::Edits {
+                    prompt,
+                    batch,
+                    outcome,
+                }
+            } else {
+                match edits::parse_edits(&outcome.response.content) {
+                    Ok(batch) => AsyncEvent::Edits {
+                        prompt,
+                        batch,
+                        outcome,
+                    },
+                    Err(err) => AsyncEvent::ParseError {
+                        error: err.to_string(),
+                        raw: outcome.response.content.clone(),
+                        prompt,
+                        outcome,
+                    },
+                }
+            }
+        }
         Err(err) => AsyncEvent::Error(err.to_string()),
     }
 }
