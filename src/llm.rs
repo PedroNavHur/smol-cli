@@ -1,4 +1,5 @@
 use crate::config::AppConfig;
+use crate::edits;
 use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -99,23 +100,27 @@ where
 }
 
 const SYSTEM_PROMPT: &str = r#"You are Smol CLI, a helpful coding assistant that can analyze codebases and propose safe, minimal file edits.
-Use the available tools to either:
-1. Propose edits when the user wants code changes
-2. Provide informational answers when the user asks questions about the codebase
-3. Explore the codebase using read_file and list_directory tools
+
+You have access to tools: read, list, edit, answer.
+
+Tool descriptions:
+- read: Read a file. Arguments: {"file_path": "path/to/file"}
+- list: List directory contents. Arguments: {"path": "path/to/dir"}
+- edit: Edit a file by replacing text. Arguments: {"file_path": "path/to/file", "old_string": "exact text to replace", "new_string": "replacement text"}
+- answer: Provide an answer to a question. Arguments: {"text": "answer text"}
 
 For code changes:
-- ALWAYS use the edit tools (replace_text, insert_after, insert_before) - do not output text directly
-- Use small, anchor-based changes
-- Never return shell commands
-- Keep edits minimal and specific
-- Always provide rationale
+- First use read/list to understand the codebase
+- Then use edit to make changes with exact old_string/new_string
 
-For informational queries:
-- Use provide_answer to give direct responses
-- Use read_file and list_directory to gather information first if needed
+For questions:
+- Use answer to respond
+- Use read/list if needed
 
-Always use the appropriate tools - never output JSON or text directly without tool calls."#;
+Output ONLY a JSON array of tool calls. Example:
+[{"name": "read", "arguments": {"file_path": "README.md"}}]
+
+Do not output any other text."#;
 
 const INFO_SYSTEM_PROMPT: &str = r#"You are Smol CLI, answering questions about codebases.
 
@@ -246,21 +251,24 @@ pub async fn provide_information(
     user_prompt: &str,
     context: &str,
 ) -> Result<EditResponse> {
-    let tools = edit_tools();
     let system_prompt = INFO_SYSTEM_PROMPT.replace("{user_question}", user_prompt);
-    let context_message = format!("Gathered context:\n{}", context);
-    let mut messages = vec![
-        Message {
-            role: "system".to_string(),
-            content: system_prompt,
-            tool_calls: None,
-        },
-        Message {
-            role: "user".to_string(),
-            content: context_message,
-            tool_calls: None,
-        },
-    ];
+    let body = ChatRequest {
+        model: cfg.provider.model.clone(),
+        messages: vec![
+            Message {
+                role: "system".to_string(),
+                content: system_prompt,
+                tool_calls: None,
+            },
+            Message {
+                role: "user".to_string(),
+                content: format!("Context:\n{}\n\nQuestion: {}", context, user_prompt),
+                tool_calls: None,
+            },
+        ],
+        temperature: Some(cfg.runtime.temperature),
+        tools: None,
+    };
 
     let client = Client::new();
     let url = format!(
@@ -268,59 +276,42 @@ pub async fn provide_information(
         cfg.provider.base_url.trim_end_matches('/')
     );
 
-    let max_iterations = 3;
-    for _ in 0..max_iterations {
-        let body = ChatRequest {
-            model: cfg.provider.model.clone(),
-            messages: messages.clone(),
-            temperature: Some(cfg.runtime.temperature),
-            tools: Some(tools.clone()),
-        };
+    let resp: ChatResponse = client
+        .post(&url)
+        .bearer_auth(&cfg.auth.api_key)
+        .json(&body)
+        .send()
+        .await
+        .context("llm request failed")?
+        .error_for_status()
+        .context("llm non-200")?
+        .json()
+        .await
+        .context("llm decode failed")?;
 
-        let resp: ChatResponse = client
-            .post(&url)
-            .bearer_auth(&cfg.auth.api_key)
-            .json(&body)
-            .send()
-            .await
-            .context("llm request failed")?
-            .error_for_status()
-            .context("llm non-200")?
-            .json()
-            .await
-            .context("llm decode failed")?;
+    let choice = resp.choices.first().ok_or_else(|| anyhow::anyhow!("no choices"))?;
+    let content = choice.message.content.clone();
 
-        let choice = resp.choices.first().ok_or_else(|| anyhow::anyhow!("no choices"))?;
-        messages.push(Message {
-            role: "assistant".to_string(),
-            content: choice.message.content.clone(),
-            tool_calls: Some(choice.message.tool_calls.clone()),
-        });
-
-        let tool_calls = &choice.message.tool_calls;
-        if tool_calls.is_empty() {
-            // No more tools, return the final response
-            return Ok(EditResponse {
-                content: choice.message.content.clone(),
-                usage: resp.usage,
-            });
-        }
-
-        // Execute tools
-        for tool_call in tool_calls {
-            let result = execute_tool(repo_root, &tool_call.function).await;
-            messages.push(Message {
-                role: "tool".to_string(),
-                content: result,
-                tool_calls: None,
-            });
+    // Parse as answer tool call
+    if let Ok(tool_call) = serde_json::from_str::<serde_json::Value>(&content) {
+        if let Some(name) = tool_call.get("name").and_then(|n| n.as_str()) {
+            if name == "answer" {
+                if let Some(args) = tool_call.get("arguments") {
+                    if let Some(text) = args.get("text").and_then(|t| t.as_str()) {
+                        return Ok(EditResponse {
+                            content: text.to_string(),
+                            usage: resp.usage,
+                        });
+                    }
+                }
+            }
         }
     }
 
-    // Max iterations reached
+    // Return as is
     Ok(EditResponse {
-        content: "Max tool calling iterations reached".to_string(),
-        usage: None,
+        content,
+        usage: resp.usage,
     })
 }
 
@@ -330,26 +321,23 @@ pub async fn propose_edits(
     user_prompt: &str,
     context: &str,
 ) -> Result<EditResponse> {
-
-
-    let tools = edit_tools();
-    let mut messages = vec![
-        Message {
-            role: "system".to_string(),
-            content: SYSTEM_PROMPT.to_string(),
-            tool_calls: None,
-        },
-        Message {
-            role: "user".to_string(),
-            content: context.to_string(),
-            tool_calls: None,
-        },
-        Message {
-            role: "user".to_string(),
-            content: user_prompt.to_string(),
-            tool_calls: None,
-        },
-    ];
+    let body = ChatRequest {
+        model: cfg.provider.model.clone(),
+        messages: vec![
+            Message {
+                role: "system".to_string(),
+                content: SYSTEM_PROMPT.to_string(),
+                tool_calls: None,
+            },
+            Message {
+                role: "user".to_string(),
+                content: format!("Context:\n{}\n\nRequest: {}", context, user_prompt),
+                tool_calls: None,
+            },
+        ],
+        temperature: Some(cfg.runtime.temperature),
+        tools: None, // No API tools, model outputs JSON
+    };
 
     let client = Client::new();
     let url = format!(
@@ -357,83 +345,104 @@ pub async fn propose_edits(
         cfg.provider.base_url.trim_end_matches('/')
     );
 
-    let max_iterations = 3;
-    for _ in 0..max_iterations {
-        let body = ChatRequest {
-            model: cfg.provider.model.clone(),
-            messages: messages.clone(),
-            temperature: Some(cfg.runtime.temperature),
-            tools: Some(tools.clone()),
-        };
+    let resp: ChatResponse = client
+        .post(&url)
+        .bearer_auth(&cfg.auth.api_key)
+        .json(&body)
+        .send()
+        .await
+        .context("llm request failed")?
+        .error_for_status()
+        .context("llm non-200")?
+        .json()
+        .await
+        .context("llm decode failed")?;
 
-        let resp: ChatResponse = client
-            .post(&url)
-            .bearer_auth(&cfg.auth.api_key)
-            .json(&body)
-            .send()
-            .await
-            .context("llm request failed")?
-            .error_for_status()
-            .context("llm non-200")?
-            .json()
-            .await
-            .context("llm decode failed")?;
+    let choice = resp.choices.first().ok_or_else(|| anyhow::anyhow!("no choices"))?;
+    let content = choice.message.content.clone();
 
-        let choice = resp.choices.first().ok_or_else(|| anyhow::anyhow!("no choices"))?;
-        messages.push(Message {
-            role: "assistant".to_string(),
-            content: choice.message.content.clone(),
-            tool_calls: Some(choice.message.tool_calls.clone()),
-        });
-
-        let tool_calls = &choice.message.tool_calls;
-        if tool_calls.is_empty() {
-            // No more tools, return the final response
-            return Ok(EditResponse {
-                content: choice.message.content.clone(),
+    // Parse the content as JSON tool calls
+    match serde_json::from_str::<Vec<serde_json::Value>>(&content) {
+        Ok(tool_calls_json) => {
+            let mut edit_actions = Vec::new();
+            for tool_call_json in tool_calls_json {
+                if let Some(name) = tool_call_json.get("name").and_then(|n| n.as_str()) {
+                    if let Some(args) = tool_call_json.get("arguments") {
+                        match name {
+                            "read" | "list" => {
+                                // Execute and ignore result for now
+                                let args_str = serde_json::to_string(args).unwrap_or_default();
+                                let tool_call = ToolCall {
+                                    id: "manual".to_string(),
+                                    r#type: "function".to_string(),
+                                    function: ToolCallFunction {
+                                        name: name.to_string(),
+                                        arguments: args_str,
+                                    },
+                                };
+                                execute_tool(repo_root, &tool_call.function).await;
+                            }
+                            "edit" => {
+                                if let (Some(file_path), Some(old_string), Some(new_string)) = (
+                                    args.get("file_path").and_then(|v| v.as_str()),
+                                    args.get("old_string").and_then(|v| v.as_str()),
+                                    args.get("new_string").and_then(|v| v.as_str()),
+                                ) {
+                                    // For edit, we can apply it directly or collect as action
+                                    // Since it's replace, create an edit action
+                                    edit_actions.push(edits::Edit {
+                                        path: file_path.to_string(),
+                                        op: "replace".to_string(),
+                                        anchor: old_string.to_string(),
+                                        snippet: new_string.to_string(),
+                                        limit: 1,
+                                        rationale: None,
+                                    });
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            // Return the edit actions as JSON
+            let batch = edits::EditBatch { edits: edit_actions };
+            Ok(EditResponse {
+                content: serde_json::to_string(&vec![serde_json::json!({"edits": batch.edits})]).unwrap_or_default(),
                 usage: resp.usage,
-            });
+            })
         }
-
-        // Execute tools
-        for tool_call in tool_calls {
-            let result = execute_tool(repo_root, &tool_call.function).await;
-            messages.push(Message {
-                role: "tool".to_string(),
-                content: result,
-                tool_calls: None,
-            });
+        Err(_) => {
+            // Not JSON, return as is
+            Ok(EditResponse {
+                content,
+                usage: resp.usage,
+            })
         }
     }
-
-    // Max iterations reached
-    Ok(EditResponse {
-        content: "Max tool calling iterations reached".to_string(),
-        usage: None,
-    })
 }
 
 async fn execute_tool(repo_root: &std::path::Path, function: &ToolCallFunction) -> String {
     match function.name.as_str() {
-        "read_file" => {
+        "read" => {
             match serde_json::from_str::<serde_json::Value>(&function.arguments) {
                 Ok(args) => {
-                    if let Some(path) = args.get("path").and_then(|v| v.as_str()) {
-                        match crate::fsutil::ensure_inside_repo(repo_root, std::path::Path::new(path)) {
+                    if let Some(file_path) = args.get("file_path").and_then(|v| v.as_str()) {
+                        match crate::fsutil::ensure_inside_repo(repo_root, std::path::Path::new(file_path)) {
                             Ok(abs_path) => match std::fs::read_to_string(&abs_path) {
                                 Ok(content) => content,
-                                Err(e) => format!("Error reading file {}: {}", path, e),
+                                Err(e) => format!("Error reading file {}: {}", file_path, e),
                             },
-                            Err(e) => format!("Invalid path {}: {}", path, e),
+                            Err(e) => format!("Invalid path {}: {}", file_path, e),
                         }
                     } else {
-                        "Error: missing path argument".to_string()
+                        "Error: missing file_path argument".to_string()
                     }
                 }
                 Err(e) => format!("Error parsing arguments: {}", e),
             }
         }
-        "list_directory" => {
+        "list" => {
             match serde_json::from_str::<serde_json::Value>(&function.arguments) {
                 Ok(args) => {
                     let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
@@ -472,10 +481,43 @@ async fn execute_tool(repo_root: &std::path::Path, function: &ToolCallFunction) 
                 Err(e) => format!("Error parsing arguments: {}", e),
             }
         }
-        "provide_answer" => {
+        "edit" => {
             match serde_json::from_str::<serde_json::Value>(&function.arguments) {
                 Ok(args) => {
-                    args.get("answer").and_then(|v| v.as_str()).unwrap_or("No answer provided").to_string()
+                    if let (Some(file_path), Some(old_string), Some(new_string)) = (
+                        args.get("file_path").and_then(|v| v.as_str()),
+                        args.get("old_string").and_then(|v| v.as_str()),
+                        args.get("new_string").and_then(|v| v.as_str()),
+                    ) {
+                        match crate::fsutil::ensure_inside_repo(repo_root, std::path::Path::new(file_path)) {
+                            Ok(abs_path) => match std::fs::read_to_string(&abs_path) {
+                                Ok(content) => {
+                                    if let Some(pos) = content.find(old_string) {
+                                        let mut new_content = content.clone();
+                                        new_content.replace_range(pos..pos + old_string.len(), new_string);
+                                        match std::fs::write(&abs_path, &new_content) {
+                                            Ok(_) => format!("Successfully edited {}", file_path),
+                                            Err(e) => format!("Error writing file {}: {}", file_path, e),
+                                        }
+                                    } else {
+                                        format!("old_string not found in {}", file_path)
+                                    }
+                                }
+                                Err(e) => format!("Error reading file {}: {}", file_path, e),
+                            },
+                            Err(e) => format!("Invalid path {}: {}", file_path, e),
+                        }
+                    } else {
+                        "Error: missing file_path, old_string, or new_string argument".to_string()
+                    }
+                }
+                Err(e) => format!("Error parsing arguments: {}", e),
+            }
+        }
+        "answer" => {
+            match serde_json::from_str::<serde_json::Value>(&function.arguments) {
+                Ok(args) => {
+                    args.get("text").and_then(|v| v.as_str()).unwrap_or("No answer provided").to_string()
                 }
                 Err(e) => format!("Error parsing arguments: {}", e),
             }

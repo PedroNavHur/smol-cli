@@ -160,43 +160,13 @@ impl App {
                         self.add_message(MessageKind::Info, "No response from model.".into());
                     }
                 } else {
-                    // Try to parse actions from the response
-                    if let Ok(actions) = edits::parse_actions(&outcome.response.content) {
-                        let has_answer = actions.iter().any(|action| matches!(action, edits::Action::ProvideAnswer { .. }));
-
-                        // Display any read or list actions
-                        for action in &actions {
-                            match action {
-                                edits::Action::ReadFile { path } => {
-                                    self.add_message(MessageKind::Tool, format!("Model requested to read file: {}", path));
-                                }
-                                edits::Action::ListDirectory { path } => {
-                                    self.add_message(MessageKind::Tool, format!("Model requested to list directory: {}", path));
-                                }
-                                _ => {}
-                            }
-                        }
-
-                        if has_answer {
-                            // Display the answer
-                            let answers = actions.iter().filter_map(|action| if let edits::Action::ProvideAnswer { answer } = action { Some(answer.clone()) } else { None }).collect::<Vec<_>>();
-                            for answer in answers {
-                                self.add_message(MessageKind::Info, answer);
-                            }
-                            self.add_message(MessageKind::Tool, "Analysis complete.".into());
-                        } else {
-                            if batch.edits.is_empty() {
-                                self.add_message(MessageKind::Info, "No edits proposed.".into());
-                            } else if let Err(err) = self.begin_review(batch) {
-                                self.add_message(MessageKind::Error, format!("Failed to prepare edits: {err}"));
-                            }
+                    // Auto-apply edits if any
+                    if !batch.edits.is_empty() {
+                        if let Err(err) = self.apply_batch(batch) {
+                            self.add_message(MessageKind::Error, format!("Failed to apply edits: {err}"));
                         }
                     } else {
-                        if batch.edits.is_empty() {
-                            self.add_message(MessageKind::Info, "No edits proposed.".into());
-                        } else if let Err(err) = self.begin_review(batch) {
-                            self.add_message(MessageKind::Error, format!("Failed to prepare edits: {err}"));
-                        }
+                        self.add_message(MessageKind::Info, "No edits proposed.".into());
                     }
                 }
 
@@ -332,6 +302,78 @@ impl App {
                 ),
             );
         }
+        Ok(())
+    }
+
+    pub(super) fn apply_batch(&mut self, batch: edits::EditBatch) -> Result<()> {
+        let mut applied = 0;
+        let backup_root = timestamp_dir()?;
+
+        for e in batch.edits {
+            if is_write_blocked(&e.path) {
+                self.add_message(
+                    MessageKind::Warn,
+                    format!("Skipping suspicious path: {}", e.path),
+                );
+                continue;
+            }
+
+            let abs = match fsutil::ensure_inside_repo(&self.repo_root, Path::new(&e.path)) {
+                Ok(p) => p,
+                Err(err) => {
+                    self.add_message(
+                        MessageKind::Error,
+                        format!("Invalid path {}: {err}", e.path),
+                    );
+                    continue;
+                }
+            };
+
+            let old = match fs::read_to_string(&abs) {
+                Ok(s) => s,
+                Err(err) => {
+                    self.add_message(
+                        MessageKind::Error,
+                        format!("Failed to read {}: {err}", e.path),
+                    );
+                    continue;
+                }
+            };
+
+            let new = match edits::apply_edit(&old, &e) {
+                Ok(n) => n,
+                Err(err) => {
+                    self.add_message(MessageKind::Warn, format!("Skipping {}: {err}", e.path));
+                    continue;
+                }
+            };
+
+            if old == new {
+                self.add_message(MessageKind::Info, format!("No change for {}", e.path));
+                continue;
+            }
+
+            // Create backup
+            let backup_path = backup_root.join(format!("{}.backup", applied));
+            fs::write(&backup_path, &old).ok();
+
+            // Apply the change
+            if let Err(err) = fs::write(&abs, &new) {
+                self.add_message(MessageKind::Error, format!("Failed to write {}: {err}", e.path));
+                continue;
+            }
+
+            self.add_message(MessageKind::Tool, format!("Applied edit to {}", e.path));
+            applied += 1;
+        }
+
+        if applied > 0 {
+            self.last_backups = vec![backup_root];
+            self.add_message(MessageKind::Info, format!("Successfully applied {} edits.", applied));
+        } else {
+            self.add_message(MessageKind::Info, "No edits were applied.".into());
+        }
+
         Ok(())
     }
 
