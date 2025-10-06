@@ -402,10 +402,63 @@ pub enum AsyncEvent {
 
 pub(super) fn build_context(memory: &[String]) -> Result<String> {
     let mut ctx = String::new();
+
+    // Include README if it exists
     if let Ok(readme) = fs::read_to_string("README.md") {
         ctx.push_str("README.md:\n");
         ctx.push_str(&truncate(&readme, 10_000));
     }
+
+    // Include common configuration and entry files
+    let common_files = [
+        "Cargo.toml",
+        "package.json",
+        "pyproject.toml",
+        "requirements.txt",
+        "Makefile",
+        "Dockerfile",
+        "docker-compose.yml",
+        ".gitignore",
+        "main.rs",
+        "lib.rs",
+        "__init__.py",
+        "index.js",
+        "app.js",
+        "server.js",
+        "main.py",
+        "app.py",
+    ];
+
+    for file in &common_files {
+        if let Ok(content) = fs::read_to_string(file) {
+            ctx.push_str(&format!("\n\n# {}\n", file));
+            ctx.push_str(&truncate(&content, 3_000));
+        }
+    }
+
+    // Try to include main source directory files
+    let source_dirs = ["src", "lib", "app", "core"];
+    for dir in &source_dirs {
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                if let Ok(file_type) = entry.file_type() {
+                    if file_type.is_file() {
+                        if let Some(file_name) = entry.file_name().to_str() {
+                            if file_name.ends_with(".rs") || file_name.ends_with(".py") || file_name.ends_with(".js") || file_name.ends_with(".ts") {
+                                if let Ok(content) = fs::read_to_string(entry.path()) {
+                                    let rel_path = format!("{}/{}", dir, file_name);
+                                    ctx.push_str(&format!("\n\n# {}\n", rel_path));
+                                    ctx.push_str(&truncate(&content, 2_000));
+                                    break; // Just include one file per directory to avoid too much context
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     if !memory.is_empty() {
         ctx.push_str("\n\n# Conversation\n");
         for entry in memory {

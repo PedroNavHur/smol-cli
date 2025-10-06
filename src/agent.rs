@@ -182,14 +182,14 @@ pub async fn run(
 
     let response = if is_informational {
         // For informational queries, use the information tools
-        llm::provide_information(cfg, user_prompt, &base_context).await?
+        llm::provide_information(cfg, repo_root, user_prompt, &base_context).await?
     } else {
         // For code changes, proceed as normal
-        llm::propose_edits(cfg, user_prompt, &base_context).await?
+        llm::propose_edits(cfg, repo_root, user_prompt, &base_context).await?
     };
 
     // Check if this should be treated as informational
-    let is_treated_as_info = is_informational || (!response.content.trim().starts_with('{') && !response.content.trim().starts_with('[') && response.content.len() > 50);
+    let is_treated_as_info = is_informational;
 
     Ok(AgentOutcome {
         plan: plan_steps,
