@@ -242,10 +242,7 @@ fn draw_status(app: &App, frame: &mut Frame, area: Rect) {
         second_line_spans.push(Span::raw(format!("   {}/{}", current.min(total), total)));
     }
 
-    let lines = vec![
-        Line::from(first_line_spans),
-        Line::from(second_line_spans),
-    ];
+    let lines = vec![Line::from(first_line_spans), Line::from(second_line_spans)];
     let paragraph = Paragraph::new(lines)
         .alignment(Alignment::Left)
         .style(Style::default().fg(STATUS_TEXT));
@@ -255,7 +252,10 @@ fn draw_status(app: &App, frame: &mut Frame, area: Rect) {
 fn render_plan(app: &App, frame: &mut Frame, area: Rect) {
     let mut lines = Vec::new();
     if let Some(plan) = &app.current_plan {
-        lines.push(Line::from(Span::styled("Plan:", Style::default().fg(Color::Gray))));
+        lines.push(Line::from(Span::styled(
+            "Plan:",
+            Style::default().fg(Color::Gray),
+        )));
         for (idx, step) in plan.iter().enumerate() {
             let checkbox = if app.completed_steps.get(idx).copied().unwrap_or(false) {
                 "✓"
@@ -280,7 +280,10 @@ fn render_plan(app: &App, frame: &mut Frame, area: Rect) {
                     annotations.join(", ")
                 )
             };
-            lines.push(Line::from(Span::styled(content, Style::default().fg(Color::Gray))));
+            lines.push(Line::from(Span::styled(
+                content,
+                Style::default().fg(Color::Gray),
+            )));
         }
     }
     let plan_block = Paragraph::new(lines)

@@ -31,15 +31,16 @@ pub enum Action {
 }
 
 pub fn parse_actions(json_text: &str) -> Result<Vec<Action>> {
-    let tool_calls: Vec<serde_json::Value> = serde_json::from_str(json_text)
-        .context("failed to parse tool calls")?;
+    let tool_calls: Vec<serde_json::Value> =
+        serde_json::from_str(json_text).context("failed to parse tool calls")?;
 
     let actions = tool_calls
         .into_iter()
         .filter_map(|call| {
             let function = call.get("function")?;
             let name = function.get("name")?.as_str()?;
-            let args: serde_json::Value = serde_json::from_str(function.get("arguments")?.as_str()?).ok()?;
+            let args: serde_json::Value =
+                serde_json::from_str(function.get("arguments")?.as_str()?).ok()?;
 
             match name {
                 "read" => {
@@ -47,7 +48,11 @@ pub fn parse_actions(json_text: &str) -> Result<Vec<Action>> {
                     Some(Action::ReadFile { path })
                 }
                 "list" => {
-                    let path = args.get("path").and_then(|p| p.as_str()).unwrap_or(".").to_string();
+                    let path = args
+                        .get("path")
+                        .and_then(|p| p.as_str())
+                        .unwrap_or(".")
+                        .to_string();
                     Some(Action::ListDirectory { path })
                 }
                 "edit" => {
@@ -63,10 +68,6 @@ pub fn parse_actions(json_text: &str) -> Result<Vec<Action>> {
                         rationale: None,
                     }))
                 }
-                "answer" => {
-                    let text = args.get("text")?.as_str()?.to_string();
-                    Some(Action::ProvideAnswer { answer: text })
-                }
                 _ => None,
             }
         })
@@ -79,11 +80,9 @@ pub fn parse_edits(json_text: &str) -> Result<EditBatch> {
     let actions = parse_actions(json_text)?;
     let edits = actions
         .into_iter()
-        .filter_map(|action| {
-            match action {
-                Action::Edit(edit) => Some(edit),
-                _ => None,
-            }
+        .filter_map(|action| match action {
+            Action::Edit(edit) => Some(edit),
+            _ => None,
         })
         .collect();
 

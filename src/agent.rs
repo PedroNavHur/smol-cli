@@ -74,14 +74,16 @@ pub async fn run(
 
     // Check if this is an informational query
     let lower_prompt = user_prompt.to_lowercase();
-    let is_informational = lower_prompt.contains("information") ||
-                          lower_prompt.contains("about") ||
-                          lower_prompt.contains("tell me") ||
-                          lower_prompt.contains("what") ||
-                          lower_prompt.contains("how") ||
-                          lower_prompt.contains("describe") ||
-                          lower_prompt.contains("explain") ||
-                          plan_steps.iter().any(|step| step.description.to_lowercase().contains("answer"));
+    let is_informational = lower_prompt.contains("information")
+        || lower_prompt.contains("about")
+        || lower_prompt.contains("tell me")
+        || lower_prompt.contains("what")
+        || lower_prompt.contains("how")
+        || lower_prompt.contains("describe")
+        || lower_prompt.contains("explain")
+        || plan_steps
+            .iter()
+            .any(|step| step.description.to_lowercase().contains("answer"));
 
     let mut reads = Vec::new();
     let mut creates = Vec::new();
@@ -169,10 +171,14 @@ pub async fn run(
                     let path = path_part[..colon_pos].trim();
                     match list_directory(repo_root, path) {
                         Ok(contents) => {
-                            base_context.push_str(&format!("\n\n# Directory listing: {}\n{}", path, contents));
+                            base_context.push_str(&format!(
+                                "\n\n# Directory listing: {}\n{}",
+                                path, contents
+                            ));
                         }
                         Err(err) => {
-                            base_context.push_str(&format!("\n\n# Directory: {} (error: {})\n", path, err));
+                            base_context
+                                .push_str(&format!("\n\n# Directory: {} (error: {})\n", path, err));
                         }
                     }
                 }
@@ -262,10 +268,16 @@ fn list_directory(repo_root: &Path, rel: &str) -> Result<String> {
     };
 
     let mut contents = Vec::new();
-    for entry in fs::read_dir(&abs).with_context(|| format!("failed to read directory {}", abs.display()))? {
+    for entry in
+        fs::read_dir(&abs).with_context(|| format!("failed to read directory {}", abs.display()))?
+    {
         let entry = entry?;
         let file_name = entry.file_name().to_string_lossy().to_string();
-        let file_type = if entry.file_type()?.is_dir() { "directory" } else { "file" };
+        let file_type = if entry.file_type()?.is_dir() {
+            "directory"
+        } else {
+            "file"
+        };
         contents.push(format!("{} ({})", file_name, file_type));
     }
     contents.sort();
@@ -279,7 +291,8 @@ fn parse_plan(content: &str) -> Option<Vec<PlanStep>> {
         .filter_map(|call| {
             let function = call.get("function")?;
             let name = function.get("name")?.as_str()?;
-            let args: serde_json::Value = serde_json::from_str(function.get("arguments")?.as_str()?).ok()?;
+            let args: serde_json::Value =
+                serde_json::from_str(function.get("arguments")?.as_str()?).ok()?;
 
             match name {
                 "read_file" => {

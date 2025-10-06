@@ -163,7 +163,10 @@ impl App {
                     // Auto-apply edits if any
                     if !batch.edits.is_empty() {
                         if let Err(err) = self.apply_batch(batch) {
-                            self.add_message(MessageKind::Error, format!("Failed to apply edits: {err}"));
+                            self.add_message(
+                                MessageKind::Error,
+                                format!("Failed to apply edits: {err}"),
+                            );
                         }
                     } else {
                         self.add_message(MessageKind::Info, "No edits proposed.".into());
@@ -359,7 +362,10 @@ impl App {
 
             // Apply the change
             if let Err(err) = fs::write(&abs, &new) {
-                self.add_message(MessageKind::Error, format!("Failed to write {}: {err}", e.path));
+                self.add_message(
+                    MessageKind::Error,
+                    format!("Failed to write {}: {err}", e.path),
+                );
                 continue;
             }
 
@@ -369,7 +375,10 @@ impl App {
 
         if applied > 0 {
             self.last_backups = vec![backup_root];
-            self.add_message(MessageKind::Info, format!("Successfully applied {} edits.", applied));
+            self.add_message(
+                MessageKind::Info,
+                format!("Successfully applied {} edits.", applied),
+            );
         } else {
             self.add_message(MessageKind::Info, "No edits were applied.".into());
         }
@@ -486,7 +495,11 @@ pub(super) fn build_context(memory: &[String]) -> Result<String> {
                 if let Ok(file_type) = entry.file_type() {
                     if file_type.is_file() {
                         if let Some(file_name) = entry.file_name().to_str() {
-                            if file_name.ends_with(".rs") || file_name.ends_with(".py") || file_name.ends_with(".js") || file_name.ends_with(".ts") {
+                            if file_name.ends_with(".rs")
+                                || file_name.ends_with(".py")
+                                || file_name.ends_with(".js")
+                                || file_name.ends_with(".ts")
+                            {
                                 if let Ok(content) = fs::read_to_string(entry.path()) {
                                     let rel_path = format!("{}/{}", dir, file_name);
                                     ctx.push_str(&format!("\n\n# {}\n", rel_path));
