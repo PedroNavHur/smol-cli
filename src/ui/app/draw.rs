@@ -176,7 +176,7 @@ fn draw_status(app: &App, frame: &mut Frame, area: Rect) {
         if let Some(cents) = spent_cents {
             first_line_spans.push(Span::raw("   Spent: "));
             first_line_spans.push(Span::styled(
-                format!("{:.4}¢", cents),
+                format!("{:.6}¢", cents),
                 Style::default().fg(Color::Green),
             ));
         }
@@ -500,7 +500,6 @@ fn estimate_cost_cents(usage: &llm::Usage, model: &llm::Model) -> Option<f64> {
     let completion_tokens = usage.completion_tokens.unwrap_or(0) as f64;
     let prompt_rate = model.prompt_cost?;
     let completion_rate = model.completion_cost?;
-    let total_cost =
-        (prompt_tokens * prompt_rate + completion_tokens * completion_rate) / 1_000_000.0;
+    let total_cost = prompt_tokens * prompt_rate + completion_tokens * completion_rate;
     Some(total_cost * 100.0)
 }
