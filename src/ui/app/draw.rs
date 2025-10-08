@@ -333,7 +333,6 @@ fn render_actions(app: &App, frame: &mut Frame, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_type(UI_BORDER_TYPE)
-                .style(Style::default().bg(Color::Rgb(50, 50, 50)))
                 .title("Actions"),
         )
         .wrap(Wrap { trim: false });
